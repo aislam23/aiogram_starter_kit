@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # Telegram Bot Service
+  bot:
+    build:
+      context: .
+      target: development
+    container_name: aiogram_bot_dev
+    env_file:
+      - .env
+    environment:
+      - ENV=development
+    volumes:
+      # Монтируем код для live reload в разработке
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - bot_network
+
+  # Redis Service
+  redis:
+    image: redis:7-alpine
+    container_name: aiogram_redis_dev
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - bot_network
+
+  # PostgreSQL Service
+  postgres:
+    image: postgres:15-alpine
+    container_name: aiogram_postgres_dev
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-botdb}
+      - POSTGRES_USER=${POSTGRES_USER:-botuser}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-securepassword}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"  # Открываем порт для подключения из IDE
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-botuser} -d ${POSTGRES_DB:-botdb}"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - bot_network
+
+  # pgAdmin for database management (optional)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: aiogram_pgadmin_dev
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@admin.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    ports:
+      - "8080:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    restart: unless-stopped
+    networks:
+      - bot_network
+    profiles:
+      - tools  # Запускается только с профилем: docker-compose --profile tools up
+
+networks:
+  bot_network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  postgres_data:
+  pgadmin_data:

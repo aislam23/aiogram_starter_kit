@@ -205,3 +205,68 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# =============================================================================
+# macOS SPECIFIC FILES
+# =============================================================================
+
+# General macOS files
+.DS_Store
+.DS_Store?
+._*
+
+# Spotlight search
+.Spotlight-V100
+
+# Trashes
+.Trashes
+
+# Volume desktop DB and folder settings
+Desktop.ini
+Icon\r
+
+# Folder config file
+[Dd]esktop.ini
+
+# Recycle Bin (Windows compatibility)
+$RECYCLE.BIN/
+
+# Windows thumbnail cache files
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+
+# Dump file
+*.stackdump
+
+# Folder config file
+[Dd]esktop.ini
+
+# =============================================================================
+# PROJECT SPECIFIC
+# =============================================================================
+
+# Environment files
+.env
+.env.local
+.env.prod
+.env.staging
+.env.test
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+logs/
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/
+*.tmp

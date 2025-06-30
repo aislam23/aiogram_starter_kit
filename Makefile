@@ -129,6 +129,27 @@ setup-git-macos: ## Setup global Git .gitignore for macOS
 	@echo "$(GREEN)🍎 Setting up global Git configuration for macOS...$(NC)"
 	./scripts/setup-git-macos.sh
 
+setup-new-project: ## Prepare template for new project (removes git history)
+	@echo "$(YELLOW)🚀 Preparing template for new project...$(NC)"
+	@echo "$(RED)⚠️  This will remove .git directory! Press Ctrl+C to cancel$(NC)"
+	@read -p "Enter new project name: " project_name; \
+	if [ -d .git ]; then \
+		rm -rf .git; \
+		echo "$(GREEN)✅ Removed old Git history$(NC)"; \
+	fi; \
+	git init; \
+	echo "$(GREEN)✅ Initialized new Git repository$(NC)"; \
+	echo "$(BLUE)📝 Next steps:$(NC)"; \
+	echo "  1. Edit .env file with your bot token"; \
+	echo "  2. Update README.md with project info"; \
+	echo "  3. git add . && git commit -m 'Initial commit'"; \
+	echo "  4. git remote add origin your-repo-url"; \
+	echo "  5. git push -u origin main"
+
+init-project: ## 🚀 Interactive setup for new project (recommended!)
+	@echo "$(GREEN)🎯 Starting interactive project setup...$(NC)"
+	@./scripts/init-project.sh
+
 # Testing
 test: ## Run tests in bot container
 	@echo "$(BLUE)🧪 Running tests...$(NC)"

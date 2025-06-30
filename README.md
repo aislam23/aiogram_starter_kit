@@ -330,6 +330,7 @@ make health
 - [Docker Compose](https://docs.docker.com/compose/)
 - [PostgreSQL](https://www.postgresql.org/docs/)
 - [Redis](https://redis.io/documentation)
+- [Устранение неполадок](./TROUBLESHOOTING.md) 🔧
 
 ## 🤝 Вклад в проект
 

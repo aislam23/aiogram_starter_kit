@@ -1,5 +1,5 @@
 aiogram==3.20.0.post0
-aioredis==2.0.1
+redis==5.2.1
 asyncpg==0.29.0
 pydantic==2.10.3
 pydantic-settings==2.6.1

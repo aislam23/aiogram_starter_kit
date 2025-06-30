@@ -1,5 +1,5 @@
 # Многоэтапная сборка для оптимизации
-FROM python:3.11-slim as base
+FROM python:3.11-slim AS base
 
 # Устанавливаем переменные окружения
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -23,7 +23,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Этап разработки
-FROM base as development
+FROM base AS development
 
 # Копируем весь код для разработки
 COPY . .
@@ -37,7 +37,7 @@ USER appuser
 CMD ["python", "-m", "app.main"]
 
 # Этап продакшена
-FROM base as production
+FROM base AS production
 
 # Копируем только необходимые файлы приложения
 COPY app/ ./app/

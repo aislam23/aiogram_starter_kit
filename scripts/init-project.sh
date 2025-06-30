@@ -205,11 +205,33 @@ EOF
         sed -i.bak "s/\"8080:80\"/\"$PGADMIN_PORT:80\"/g" docker-compose.yml
     fi
     
-    # Заменяем названия volumes
+    # Заменяем названия volumes и контейнеров
     if [ "$PROJECT_NAME" != "aiogram_starter_kit" ]; then
+        # Переименовываем volumes
         sed -i.bak "s/aiogram_starter_kit_/${PROJECT_NAME}_/g" docker-compose.yml
         sed -i.bak "s/aiogram_starter_kit_/${PROJECT_NAME}_/g" docker-compose.prod.yml
         sed -i.bak "s/aiogram_starter_kit/$PROJECT_NAME/g" Makefile
+        
+        echo -e "${GREEN}✅ Volumes переименованы в: ${PROJECT_NAME}_*${NC}"
+    fi
+    
+    # Переименовываем контейнеры по имени бота (более логично)
+    if [ -n "$BOT_USERNAME" ]; then
+        # Создаем безопасное имя контейнера (только буквы, цифры, подчеркивания)
+        SAFE_BOT_NAME=$(echo "$BOT_USERNAME" | sed 's/[^a-zA-Z0-9_]/_/g' | tr '[:upper:]' '[:lower:]')
+        
+        # Переименовываем контейнеры (заменяем aiogram_ на botname_)
+        sed -i.bak "s/aiogram_bot_dev/${SAFE_BOT_NAME}_bot_dev/g" docker-compose.yml
+        sed -i.bak "s/aiogram_redis_dev/${SAFE_BOT_NAME}_redis_dev/g" docker-compose.yml
+        sed -i.bak "s/aiogram_postgres_dev/${SAFE_BOT_NAME}_postgres_dev/g" docker-compose.yml
+        sed -i.bak "s/aiogram_pgadmin_dev/${SAFE_BOT_NAME}_pgadmin_dev/g" docker-compose.yml
+        
+        # То же для продакшена
+        sed -i.bak "s/aiogram_bot_prod/${SAFE_BOT_NAME}_bot_prod/g" docker-compose.prod.yml
+        sed -i.bak "s/aiogram_redis_prod/${SAFE_BOT_NAME}_redis_prod/g" docker-compose.prod.yml
+        sed -i.bak "s/aiogram_postgres_prod/${SAFE_BOT_NAME}_postgres_prod/g" docker-compose.prod.yml
+        
+        echo -e "${GREEN}✅ Контейнеры переименованы в: ${SAFE_BOT_NAME}_*${NC}"
     fi
     
     # Удаляем backup файлы

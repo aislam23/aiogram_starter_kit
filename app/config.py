@@ -1,7 +1,9 @@
 """
 Конфигурация приложения
 """
-from pydantic import Field
+import json
+from typing import List
+from pydantic import Field, validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,6 +13,9 @@ class Settings(BaseSettings):
     # Bot settings
     bot_token: str = Field(..., alias="BOT_TOKEN")
     bot_username: str = Field("", alias="BOT_USERNAME")
+    
+    # Admin settings
+    admin_user_ids: str = Field("[]", alias="ADMIN_USER_IDS")
     
     # Database settings
     postgres_host: str = Field("localhost", alias="POSTGRES_HOST")
@@ -38,11 +43,28 @@ class Settings(BaseSettings):
         extra="ignore"
     )
     
+    @validator('admin_user_ids')
+    def parse_admin_ids(cls, v):
+        """Парсим список админов из JSON"""
+        if isinstance(v, str):
+            try:
+                # Пробуем парсить как JSON
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return [int(user_id) for user_id in parsed]
+                else:
+                    # Если не список, то пробуем как строку через запятую
+                    return [int(x.strip()) for x in v.split(',') if x.strip()]
+            except (json.JSONDecodeError, ValueError):
+                # Если не получается, пробуем как строку через запятую
+                return [int(x.strip()) for x in v.split(',') if x.strip()]
+        return v
+    
     @property
     def database_url(self) -> str:
         """Формирование URL для подключения к базе данных"""
         return (
-            f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
+            f"postgresql://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
     
@@ -52,6 +74,10 @@ class Settings(BaseSettings):
         if self.redis_password:
             return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
         return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
+    
+    def is_admin(self, user_id: int) -> bool:
+        """Проверка, является ли пользователь админом"""
+        return user_id in self.admin_user_ids
 
 
 # Создаем глобальный экземпляр настроек

@@ -38,9 +38,25 @@ services:
     restart: always
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: >
+      sh -c "
+      if [ -n \"$${REDIS_PASSWORD}\" ]; then
+        redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass $${REDIS_PASSWORD}
+      else
+        redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+      fi
+      "
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: >
+        sh -c "
+        if [ -n \"$${REDIS_PASSWORD}\" ]; then
+          redis-cli -a $${REDIS_PASSWORD} ping
+        else
+          redis-cli ping
+        fi
+        "
       interval: 30s
       timeout: 10s
       retries: 3

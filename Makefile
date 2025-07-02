@@ -38,11 +38,17 @@ stop: ## Stop development environment
 # Production commands
 prod: ## Start production environment
 	@echo "$(GREEN)🏭 Starting production environment...$(NC)"
+	@$(MAKE) validate-prod
 	$(DOCKER_COMPOSE_PROD) up --build -d
 
 prod-stop: ## Stop production environment
 	@echo "$(YELLOW)⏹️  Stopping production environment...$(NC)"
 	$(DOCKER_COMPOSE_PROD) down
+
+prod-deploy: ## Deploy to production (with validation)
+	@echo "$(GREEN)🚀 Deploying to production...$(NC)"
+	@$(MAKE) validate-prod
+	./scripts/deploy.sh
 
 # Build commands
 build: ## Build development images
@@ -128,6 +134,37 @@ setup: ## Initial setup - create .env file
 setup-git-macos: ## Setup global Git .gitignore for macOS
 	@echo "$(GREEN)🍎 Setting up global Git configuration for macOS...$(NC)"
 	./scripts/setup-git-macos.sh
+
+setup-prod: ## Create .env.prod file for production
+	@echo "$(GREEN)🏭 Setting up production environment...$(NC)"
+	@if [ ! -f .env.prod ]; then \
+		cp .env.prod.example .env.prod; \
+		echo "$(YELLOW)📄 Created .env.prod file from .env.prod.example$(NC)"; \
+		echo "$(RED)⚠️  Please edit .env.prod file with production values!$(NC)"; \
+		echo "$(BLUE)💡 Don't forget to:$(NC)"; \
+		echo "  - Set strong passwords"; \
+		echo "  - Configure production bot token"; \
+		echo "  - Review all security settings"; \
+	else \
+		echo "$(YELLOW)📄 .env.prod file already exists$(NC)"; \
+	fi
+
+validate-prod: ## Validate production environment file
+	@echo "$(BLUE)🔍 Validating production environment...$(NC)"
+	@if [ ! -f .env.prod ]; then \
+		echo "$(RED)❌ .env.prod file not found!$(NC)"; \
+		echo "$(BLUE)💡 Run: make setup-prod$(NC)"; \
+		exit 1; \
+	fi
+	@if ! grep -q "BOT_TOKEN=.*[^_here]$$" .env.prod; then \
+		echo "$(RED)❌ BOT_TOKEN not set in .env.prod$(NC)"; \
+		exit 1; \
+	fi
+	@if grep -q "CHANGE_ME" .env.prod; then \
+		echo "$(RED)❌ Please change default passwords in .env.prod$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✅ Production environment looks good!$(NC)"
 
 setup-new-project: ## Prepare template for new project (removes git history)
 	@echo "$(YELLOW)🚀 Preparing template for new project...$(NC)"

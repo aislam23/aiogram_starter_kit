@@ -104,6 +104,7 @@ main() {
     # Сбор информации о боте
     ask_input "Введите токен вашего бота (от @BotFather)" "BOT_TOKEN" "true"
     ask_input "Введите username бота (без @)" "BOT_USERNAME" "true"
+    ask_input "Введите ваш Telegram ID (для админки)" "ADMIN_ID" "true"
     
     echo ""
     echo -e "${PURPLE}═══════════════════════════════════════════════════════════════${NC}"
@@ -166,8 +167,8 @@ main() {
     echo ""
     echo -e "${GREEN}🔧 Начинаем настройку проекта...${NC}"
     
-    # Создаем .env файл
-    echo -e "${BLUE}📝 Создание .env файла...${NC}"
+    # Создаем .env файл для разработки
+    echo -e "${BLUE}📝 Создание .env файла для разработки...${NC}"
     cat > .env << EOF
 # Bot Configuration
 BOT_TOKEN=$BOT_TOKEN
@@ -192,6 +193,46 @@ ENV=development
 # Logging
 LOG_LEVEL=INFO
 EOF
+
+    # Создаем .env.prod файл для продакшена
+    echo -e "${BLUE}📝 Создание .env.prod файла для продакшена...${NC}"
+    # Генерируем случайные пароли для продакшена
+    PROD_POSTGRES_PASSWORD=$(openssl rand -base64 32 2>/dev/null || date +%s | sha256sum | base64 | head -c 32)
+    PROD_REDIS_PASSWORD=$(openssl rand -base64 32 2>/dev/null || date +%s | sha256sum | base64 | head -c 32)
+    
+    cat > .env.prod << EOF
+# ========================================
+# 🏭 PRODUCTION ENVIRONMENT VARIABLES
+# ========================================
+
+# 🤖 BOT CONFIGURATION
+BOT_TOKEN=$BOT_TOKEN
+BOT_USERNAME=$BOT_USERNAME
+
+# 👑 ADMIN CONFIGURATION
+ADMIN_USER_IDS=["$ADMIN_ID"]
+
+# 🗄️ DATABASE CONFIGURATION  
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_DB=${POSTGRES_DB}_prod
+POSTGRES_USER=${POSTGRES_USER}_prod
+POSTGRES_PASSWORD=$PROD_POSTGRES_PASSWORD
+
+# 📦 REDIS CONFIGURATION
+REDIS_HOST=redis
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=$PROD_REDIS_PASSWORD
+
+# 🌍 ENVIRONMENT
+ENV=production
+
+# 📝 LOGGING
+LOG_LEVEL=WARNING
+EOF
+
+    echo -e "${GREEN}✅ Созданы файлы: .env (dev) и .env.prod (production)${NC}"
     
     # Обновляем docker-compose.yml с новыми портами и именами
     echo -e "${BLUE}🐳 Обновление Docker Compose...${NC}"

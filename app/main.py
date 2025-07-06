@@ -13,6 +13,7 @@ from aiogram.fsm.storage.redis import RedisStorage
 from app.config import settings
 from app.handlers import setup_routers
 from app.middlewares import setup_middlewares
+from app.database import db
 
 
 async def setup_bot() -> tuple[Bot, Dispatcher]:
@@ -46,6 +47,15 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
 
 async def on_startup(bot: Bot) -> None:
     """Действия при запуске бота"""
+    # Инициализируем базу данных
+    try:
+        await db.create_tables()
+        await db.update_bot_stats()
+        logger.info("✅ Database initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize database: {e}")
+        sys.exit(1)
+    
     bot_info = await bot.get_me()
     logger.info(f"🚀 Bot @{bot_info.username} started successfully!")
     logger.info(f"🏠 Environment: {settings.env}")

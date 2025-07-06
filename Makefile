@@ -197,9 +197,21 @@ db-backup: ## Create database backup
 	@echo "$(BLUE)💾 Creating database backup...$(NC)"
 	$(DOCKER_COMPOSE) exec postgres pg_dump -U ${POSTGRES_USER:-botuser} ${POSTGRES_DB:-botdb} > backup_$(shell date +%Y%m%d_%H%M%S).sql
 
-db-migrate: ## Run database migrations (placeholder)
+db-migrate: ## Run database migrations
 	@echo "$(BLUE)🔄 Running database migrations...$(NC)"
-	$(DOCKER_COMPOSE) exec bot python -c "print('Migrations would run here')"
+	$(DOCKER_COMPOSE) exec bot python -c "import asyncio; from app.database import db; asyncio.run(db.run_migrations())"
+
+db-migration-status: ## Show migration status
+	@echo "$(BLUE)📊 Showing migration status...$(NC)"
+	$(DOCKER_COMPOSE) exec bot python -c "import asyncio; from app.database import db; migrations = asyncio.run(db.get_migration_history()); [print(f'{m.version} - {m.name} ({m.applied_at})') for m in migrations]"
+
+create-migration: ## Create new migration (usage: make create-migration NAME=migration_name DESC="Description")
+	@if [ -z "$(NAME)" ]; then \
+		echo "$(RED)❌ Please provide migration name: make create-migration NAME=migration_name DESC='Description'$(NC)"; \
+		exit 1; \
+	fi
+	@echo "$(BLUE)📝 Creating migration: $(NAME)$(NC)"
+	@python scripts/create_migration.py $(NAME) "$(DESC)"
 
 # Update dependencies
 update-deps: ## Update Python dependencies

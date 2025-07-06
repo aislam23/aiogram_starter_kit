@@ -8,7 +8,8 @@ from sqlalchemy import select, func, update
 from loguru import logger
 
 from app.config import settings
-from .models import Base, User, BotStats
+from .models import Base, User, BotStats, MigrationHistory
+from .migrations import MigrationManager
 
 
 class Database:
@@ -29,9 +30,25 @@ class Database:
             class_=AsyncSession,
             expire_on_commit=False
         )
+        
+        # Инициализируем менеджер миграций
+        self.migration_manager = MigrationManager(self.engine)
+    
+    async def run_migrations(self):
+        """Запуск всех неприменённых миграций"""
+        try:
+            await self.migration_manager.run_migrations()
+            logger.info("✅ Database migrations completed successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to run migrations: {e}")
+            raise
     
     async def create_tables(self):
         """Создание таблиц в базе данных"""
+        # Сначала запускаем миграции
+        await self.run_migrations()
+        
+        # Затем создаем таблицы через SQLAlchemy (для новых моделей)
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         logger.info("✅ Database tables created successfully")
@@ -126,6 +143,14 @@ class Database:
         async with self.session_maker() as session:
             result = await session.execute(select(BotStats).order_by(BotStats.id.desc()).limit(1))
             return result.scalar_one_or_none()
+    
+    async def get_migration_history(self) -> List[MigrationHistory]:
+        """Получение истории миграций"""
+        async with self.session_maker() as session:
+            result = await session.execute(
+                select(MigrationHistory).order_by(MigrationHistory.applied_at.desc())
+            )
+            return result.scalars().all()
 
 
 # Создаем глобальный экземпляр базы данных

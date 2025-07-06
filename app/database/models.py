@@ -43,4 +43,20 @@ class BotStats(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     
     def __repr__(self) -> str:
-        return f"<BotStats(total_users={self.total_users}, status={self.status})>" 
+        return f"<BotStats(total_users={self.total_users}, status={self.status})>"
+
+
+class MigrationHistory(Base):
+    """Модель для отслеживания примененных миграций"""
+    
+    __tablename__ = "migration_history"
+    
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    version: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=True)
+    applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    execution_time: Mapped[Optional[float]] = mapped_column(nullable=True)  # время выполнения в секундах
+    
+    def __repr__(self) -> str:
+        return f"<MigrationHistory(version={self.version}, name={self.name})>" 

@@ -236,6 +236,8 @@ LOG_LEVEL=INFO
 - **История миграций**: Ведется журнал примененных миграций
 - **Откат**: Поддержка отката миграций (опционально)
 
+📚 **[Подробная документация по миграциям](docs/MIGRATIONS.md)**
+
 ### Работа с миграциями
 
 ```bash
@@ -264,36 +266,6 @@ app/database/migrations/
     ├── 20241201_000001_initial_tables.py
     └── 20241201_000002_add_user_columns_example.py
 ```
-
-### Создание миграций
-
-1. **Автоматически через Makefile**:
-   ```bash
-   make create-migration NAME=add_user_phone DESC="Add phone column to users"
-   ```
-
-2. **Через скрипт**:
-   ```bash
-   python scripts/create_migration.py add_user_phone "Add phone column to users"
-   ```
-
-3. **Вручную**: Создайте файл в `app/database/migrations/versions/` по шаблону:
-   ```python
-   class YourMigration(Migration):
-       def get_version(self) -> str:
-           return "20241201_120000"
-       
-       def get_description(self) -> str:
-           return "Your migration description"
-       
-       async def check_can_apply(self, connection: AsyncConnection) -> bool:
-           # Проверка необходимости применения
-           return True
-       
-       async def upgrade(self, connection: AsyncConnection) -> None:
-           # Применение изменений
-           pass
-   ```
 
 ### Автоматические таблицы
 

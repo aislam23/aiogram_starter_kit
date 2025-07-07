@@ -47,7 +47,6 @@ class MigrationManager:
                         execution_time FLOAT
                     );
                 """))
-                await connection.commit()
                 logger.info("✅ Created migration_history table")
         except Exception as e:
             logger.error(f"❌ Error creating migration table: {e}")
@@ -125,44 +124,44 @@ class MigrationManager:
                 "execution_time": execution_time
             })
             
-            await connection.commit()
             logger.info(f"✅ Applied migration {migration.name} in {execution_time:.2f}s")
             return True
             
         except Exception as e:
-            await connection.rollback()
             logger.error(f"❌ Error applying migration {migration.name}: {e}")
             raise
     
     async def run_migrations(self) -> None:
         """Запускает все неприменённые миграции"""
-        async with self.engine.begin() as connection:
-            # Убеждаемся что таблица миграций существует
-            await self.ensure_migration_table(connection)
-            
-            # Получаем список примененных миграций
-            applied_migrations = await self.get_applied_migrations(connection)
-            
-            # Находим все доступные миграции
-            all_migrations = self.discover_migrations()
-            
-            # Фильтруем неприменённые миграции
-            pending_migrations = [
-                m for m in all_migrations 
-                if m.version not in applied_migrations
-            ]
-            
-            if not pending_migrations:
-                logger.info("✅ All migrations are up to date")
-                return
-            
-            logger.info(f"🔄 Found {len(pending_migrations)} pending migrations")
-            
-            # Применяем миграции по порядку
-            for migration in pending_migrations:
-                await self.apply_migration(connection, migration)
-            
-            logger.info(f"✅ Successfully applied {len(pending_migrations)} migrations")
+        async with self.engine.connect() as connection:
+            # Начинаем транзакцию
+            async with connection.begin():
+                # Убеждаемся что таблица миграций существует
+                await self.ensure_migration_table(connection)
+                
+                # Получаем список примененных миграций
+                applied_migrations = await self.get_applied_migrations(connection)
+                
+                # Находим все доступные миграции
+                all_migrations = self.discover_migrations()
+                
+                # Фильтруем неприменённые миграции
+                pending_migrations = [
+                    m for m in all_migrations 
+                    if m.version not in applied_migrations
+                ]
+                
+                if not pending_migrations:
+                    logger.info("✅ All migrations are up to date")
+                    return
+                
+                logger.info(f"🔄 Found {len(pending_migrations)} pending migrations")
+                
+                # Применяем миграции по порядку
+                for migration in pending_migrations:
+                    await self.apply_migration(connection, migration)
+                
+                logger.info(f"✅ Successfully applied {len(pending_migrations)} migrations")
     
     async def check_column_exists(self, connection: AsyncConnection, 
                                 table_name: str, column_name: str) -> bool:

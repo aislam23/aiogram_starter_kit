@@ -1,7 +1,8 @@
 """
-Database package
+Пакет для работы с базой данных
 """
-from .models import User, BotStats
-from .database import Database, db
 
-__all__ = ["User", "BotStats", "Database", "db"]
+from .database import db
+from .models import User, BotStats, MigrationHistory
+
+__all__ = ['db', 'User', 'BotStats', 'MigrationHistory']

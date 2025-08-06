@@ -12,7 +12,7 @@ YELLOW = \033[1;33m
 BLUE = \033[0;34m
 NC = \033[0m # No Color
 
-.PHONY: help build up down logs restart clean dev prod shell db-shell redis-shell test
+.PHONY: help build up down logs restart clean dev prod shell db-shell redis-shell test setup-remote-repo
 
 help: ## Show this help message
 	@echo "$(BLUE)Available commands:$(NC)"
@@ -170,22 +170,85 @@ setup-new-project: ## Prepare template for new project (removes git history)
 	@echo "$(YELLOW)🚀 Preparing template for new project...$(NC)"
 	@echo "$(RED)⚠️  This will remove .git directory! Press Ctrl+C to cancel$(NC)"
 	@read -p "Enter new project name: " project_name; \
+	read -p "Enter remote repository URL (optional, press Enter to skip): " repo_url; \
+	current_dir=$$(basename $$(pwd)); \
 	if [ -d .git ]; then \
 		rm -rf .git; \
 		echo "$(GREEN)✅ Removed old Git history$(NC)"; \
 	fi; \
 	git init; \
-	echo "$(GREEN)✅ Initialized new Git repository$(NC)"; \
-	echo "$(BLUE)📝 Next steps:$(NC)"; \
-	echo "  1. Edit .env file with your bot token"; \
-	echo "  2. Update README.md with project info"; \
-	echo "  3. git add . && git commit -m 'Initial commit'"; \
-	echo "  4. git remote add origin your-repo-url"; \
-	echo "  5. git push -u origin main"
+	git add .; \
+	git commit -m "Initial commit: $$project_name"; \
+	if [ -n "$$repo_url" ]; then \
+		echo "$(BLUE)📡 Setting up remote repository...$(NC)"; \
+		git branch -M main; \
+		git remote add origin "$$repo_url"; \
+		if git push -u origin main; then \
+			echo "$(GREEN)✅ Project successfully pushed to remote repository!$(NC)"; \
+		else \
+			echo "$(RED)❌ Failed to push to remote repository$(NC)"; \
+			echo "$(BLUE)🔧 You can set it up later with:$(NC)"; \
+			echo "  git remote set-url origin $$repo_url"; \
+			echo "  git push -u origin main"; \
+		fi; \
+	else \
+		echo "$(GREEN)✅ Initialized new Git repository$(NC)"; \
+		echo "$(BLUE)📝 Next steps:$(NC)"; \
+		echo "  1. Edit .env file with your bot token"; \
+		echo "  2. Update README.md with project info"; \
+		echo "  3. git remote add origin your-repo-url"; \
+		echo "  4. git branch -M main"; \
+		echo "  5. git push -u origin main"; \
+	fi; \
+	if [ "$$current_dir" != "$$project_name" ]; then \
+		echo "$(BLUE)📁 Renaming project folder...$(NC)"; \
+		parent_dir=$$(dirname $$(pwd)); \
+		if [ -d "$$parent_dir/$$project_name" ]; then \
+			echo "$(RED)❌ Folder '$$project_name' already exists!$(NC)"; \
+		else \
+			cd "$$parent_dir" && mv "$$current_dir" "$$project_name"; \
+			echo "$(GREEN)✅ Folder renamed: $$current_dir → $$project_name$(NC)"; \
+			echo "$(BLUE)📍 Project location: $$parent_dir/$$project_name$(NC)"; \
+		fi; \
+	fi
 
 init-project: ## 🚀 Interactive setup for new project (recommended!)
 	@echo "$(GREEN)🎯 Starting interactive project setup...$(NC)"
 	@./scripts/init-project.sh
+
+setup-remote-repo: ## Add remote repository to existing project
+	@echo "$(BLUE)📡 Setting up remote repository...$(NC)"
+	@read -p "Enter remote repository URL: " repo_url; \
+	if [ -z "$$repo_url" ]; then \
+		echo "$(RED)❌ Repository URL is required$(NC)"; \
+		exit 1; \
+	fi; \
+	if git remote get-url origin >/dev/null 2>&1; then \
+		echo "$(YELLOW)⚠️  Remote origin already exists$(NC)"; \
+		read -p "Replace existing origin? [y/N]: " replace; \
+		if [ "$$replace" = "y" ] || [ "$$replace" = "Y" ]; then \
+			git remote set-url origin "$$repo_url"; \
+			echo "$(GREEN)✅ Remote origin updated$(NC)"; \
+		else \
+			echo "$(BLUE)ℹ️  Keeping existing remote origin$(NC)"; \
+			exit 0; \
+		fi; \
+	else \
+		git remote add origin "$$repo_url"; \
+		echo "$(GREEN)✅ Remote origin added$(NC)"; \
+	fi; \
+	current_branch=$$(git branch --show-current); \
+	if [ "$$current_branch" != "main" ]; then \
+		echo "$(BLUE)🔄 Renaming branch '$$current_branch' to 'main'...$(NC)"; \
+		git branch -M main; \
+	fi; \
+	echo "$(YELLOW)🚀 Pushing to remote repository...$(NC)"; \
+	if git push -u origin main; then \
+		echo "$(GREEN)✅ Successfully pushed to remote repository!$(NC)"; \
+	else \
+		echo "$(RED)❌ Failed to push to remote repository$(NC)"; \
+		echo "$(BLUE)🔧 Try pushing manually: git push -u origin main$(NC)"; \
+	fi
 
 # Testing
 test: ## Run tests in bot container

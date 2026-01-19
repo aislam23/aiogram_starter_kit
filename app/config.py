@@ -35,7 +35,14 @@ class Settings(BaseSettings):
     
     # Logging
     log_level: str = Field("INFO", alias="LOG_LEVEL")
-    
+
+    # Local Bot API settings
+    use_local_api: bool = Field(False, alias="USE_LOCAL_API")
+    telegram_api_id: str = Field("", alias="TELEGRAM_API_ID")
+    telegram_api_hash: str = Field("", alias="TELEGRAM_API_HASH")
+    local_api_host: str = Field("telegram-bot-api", alias="LOCAL_API_HOST")
+    local_api_port: int = Field(8081, alias="LOCAL_API_PORT")
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -78,6 +85,26 @@ class Settings(BaseSettings):
     def is_admin(self, user_id: int) -> bool:
         """Проверка, является ли пользователь админом"""
         return user_id in self.admin_user_ids
+
+    @property
+    def local_api_url(self) -> str:
+        """URL для подключения к Local Bot API Server"""
+        return f"http://{self.local_api_host}:{self.local_api_port}"
+
+    @property
+    def file_upload_limit_mb(self) -> int:
+        """Лимит загрузки файлов в MB"""
+        return 2000 if self.use_local_api else 50
+
+    @property
+    def file_download_limit_mb(self) -> int:
+        """Лимит скачивания файлов в MB"""
+        return 2000 if self.use_local_api else 20
+
+    @property
+    def api_mode_name(self) -> str:
+        """Человекочитаемое название режима API"""
+        return "Local Bot API" if self.use_local_api else "Public Bot API"
 
 
 # Создаем глобальный экземпляр настроек

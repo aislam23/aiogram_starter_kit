@@ -5,8 +5,11 @@ import asyncio
 import sys
 from loguru import logger
 
+import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.redis import RedisStorage
 
@@ -16,13 +19,46 @@ from app.middlewares import setup_middlewares
 from app.database import db
 
 
+async def check_local_api_available() -> bool:
+    """Проверка доступности Local Bot API Server"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                settings.local_api_url,
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as response:
+                # Local API возвращает 404 на root, но соединение работает
+                return response.status in (200, 404)
+    except Exception:
+        return False
+
+
 async def setup_bot() -> tuple[Bot, Dispatcher]:
     """Настройка бота и диспетчера"""
-    
+
+    # Настройка session в зависимости от режима API
+    session = None
+    if settings.use_local_api:
+        logger.info("🔧 Initializing Local Bot API mode...")
+        logger.info(f"📡 API URL: {settings.local_api_url}")
+
+        if await check_local_api_available():
+            session = AiohttpSession(
+                api=TelegramAPIServer.from_base(settings.local_api_url, is_local=True)
+            )
+            logger.info("✅ Local Bot API connected")
+            logger.info(f"📁 File upload limit: {settings.file_upload_limit_mb} MB")
+        else:
+            logger.warning("⚠️ Local Bot API not available, using Public API")
+    else:
+        logger.info("🌍 Using Public Bot API")
+        logger.info(f"📁 File upload limit: {settings.file_upload_limit_mb} MB")
+
     # Создаем бота
     bot = Bot(
         token=settings.bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=session
     )
     
     # Создаем хранилище состояний
@@ -59,6 +95,7 @@ async def on_startup(bot: Bot) -> None:
     bot_info = await bot.get_me()
     logger.info(f"🚀 Bot @{bot_info.username} started successfully!")
     logger.info(f"🏠 Environment: {settings.env}")
+    logger.info(f"🌐 API Mode: {settings.api_mode_name}")
 
 
 async def on_shutdown(bot: Bot) -> None:

@@ -12,7 +12,7 @@ YELLOW = \033[1;33m
 BLUE = \033[0;34m
 NC = \033[0m # No Color
 
-.PHONY: help build up down logs restart clean dev prod shell db-shell redis-shell test setup-remote-repo
+.PHONY: help build up down logs restart clean dev prod shell db-shell redis-shell test setup-remote-repo dev-local dev-local-logs stop-local api-status api-logs api-restart
 
 help: ## Show this help message
 	@echo "$(BLUE)Available commands:$(NC)"
@@ -34,6 +34,30 @@ dev-tools: ## Start development environment with tools (pgAdmin)
 stop: ## Stop development environment
 	@echo "$(YELLOW)⏹️  Stopping development environment...$(NC)"
 	$(DOCKER_COMPOSE) down
+
+# Local Bot API commands
+dev-local: ## Start with Local Bot API (2GB file limit)
+	@echo "$(GREEN)🚀 Starting with Local Bot API...$(NC)"
+	$(DOCKER_COMPOSE) --profile local-api up --build -d
+
+dev-local-logs: ## Start with Local Bot API (foreground)
+	@echo "$(GREEN)🚀 Starting with Local Bot API...$(NC)"
+	$(DOCKER_COMPOSE) --profile local-api up --build
+
+stop-local: ## Stop Local Bot API environment
+	@echo "$(YELLOW)⏹️ Stopping Local Bot API...$(NC)"
+	$(DOCKER_COMPOSE) --profile local-api down
+
+api-status: ## Check Local Bot API Server status
+	@curl -sf http://localhost:$${LOCAL_API_PORT:-8081}/ >/dev/null 2>&1 && \
+		echo "$(GREEN)✅ Local Bot API is running$(NC)" || \
+		echo "$(RED)❌ Local Bot API is not available$(NC)"
+
+api-logs: ## Show Local Bot API Server logs
+	$(DOCKER_COMPOSE) logs -f telegram-bot-api
+
+api-restart: ## Restart Local Bot API Server
+	$(DOCKER_COMPOSE) restart telegram-bot-api
 
 # Production commands
 prod: ## Start production environment

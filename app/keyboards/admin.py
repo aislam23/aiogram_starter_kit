@@ -12,12 +12,17 @@ class AdminKeyboards:
     def main_admin_menu() -> InlineKeyboardMarkup:
         """Главное меню админа"""
         builder = InlineKeyboardBuilder()
-        
+
         builder.add(InlineKeyboardButton(
             text="📊 Рассылка",
             callback_data="admin_broadcast"
         ))
-        
+
+        builder.add(InlineKeyboardButton(
+            text="⚙️ Настройки API",
+            callback_data="admin_api_settings"
+        ))
+
         builder.adjust(1)
         return builder.as_markup()
     
@@ -84,10 +89,47 @@ class AdminKeyboards:
     def create_custom_button(text: str, url: str) -> InlineKeyboardMarkup:
         """Создание кастомной кнопки для рассылки"""
         builder = InlineKeyboardBuilder()
-        
+
         builder.add(InlineKeyboardButton(
             text=text,
             url=url
         ))
-        
-        return builder.as_markup() 
+
+        return builder.as_markup()
+
+    @staticmethod
+    def api_settings_menu(is_local_mode: bool) -> InlineKeyboardMarkup:
+        """Меню настроек API"""
+        builder = InlineKeyboardBuilder()
+
+        switch_text = "🌍 Перейти на Public API" if is_local_mode else "🟢 Перейти на Local API"
+        builder.add(InlineKeyboardButton(
+            text=switch_text,
+            callback_data="api_switch_mode"
+        ))
+
+        builder.add(InlineKeyboardButton(
+            text="📊 Проверить статус",
+            callback_data="api_check_status"
+        ))
+
+        builder.add(InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data="api_back"
+        ))
+
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def api_settings_back() -> InlineKeyboardMarkup:
+        """Кнопка возврата из инструкций"""
+        builder = InlineKeyboardBuilder()
+
+        builder.add(InlineKeyboardButton(
+            text="◀️ Назад к настройкам",
+            callback_data="admin_api_settings"
+        ))
+
+        builder.adjust(1)
+        return builder.as_markup()

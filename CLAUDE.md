@@ -38,6 +38,14 @@ make prod          # Start production (validates .env.prod first)
 make prod-stop     # Stop production
 ```
 
+### Local Bot API (файлы до 2GB)
+```bash
+make dev-local     # Start with Local Bot API Server
+make api-status    # Check Local API status
+make api-logs      # View Local API logs
+make stop-local    # Stop Local API environment
+```
+
 ## Architecture
 
 ### Entry Point Flow
@@ -83,6 +91,13 @@ States for multi-step interactions defined in `app/states/`. Used with Redis sto
 
 ### Admin Access
 Admin user IDs configured in `.env` as `ADMIN_USER_IDS=[123456789]`. Check with `settings.is_admin(user_id)`.
+
+### Local Bot API
+Optional support for Local Bot API Server (2GB file uploads instead of 50MB):
+- Configuration in `app/config.py`: `use_local_api`, `local_api_url`, `file_upload_limit_mb` properties
+- Bot initialization in `app/main.py`: uses `TelegramAPIServer` and `AiohttpSession` when enabled
+- Admin UI in `app/handlers/admin/api_settings.py`: status check, mode switching instructions
+- Docker service `telegram-bot-api` with profile `local-api` in `docker-compose.yml`
 
 ## Language
 

@@ -80,6 +80,30 @@ services:
     profiles:
       - tools  # Запускается только с профилем: docker-compose --profile tools up
 
+  # Local Telegram Bot API Server (optional)
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    container_name: aiogram_telegram_api_dev
+    environment:
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
+      TELEGRAM_LOCAL: "1"
+    volumes:
+      - telegram_bot_api_data:/var/lib/telegram-bot-api
+    ports:
+      - "${LOCAL_API_PORT:-8081}:8081"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - bot_network
+    profiles:
+      - local-api  # Запускается только с профилем: docker-compose --profile local-api up
+
 networks:
   bot_network:
     driver: bridge
@@ -88,3 +112,4 @@ volumes:
   redis_data:
   postgres_data:
   pgadmin_data:
+  telegram_bot_api_data:

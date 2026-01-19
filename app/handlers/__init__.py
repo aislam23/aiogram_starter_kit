@@ -5,7 +5,7 @@ from aiogram import Dispatcher
 
 from .start import router as start_router
 from .help import router as help_router
-from .admin import admin_router
+from .admin import combined_router as admin_router
 
 
 def setup_routers(dp: Dispatcher) -> None:

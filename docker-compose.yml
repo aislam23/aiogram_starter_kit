@@ -12,6 +12,8 @@ services:
     volumes:
       # Монтируем код для live reload в разработке
       - ./app:/app/app:ro
+      # Shared volume with Local Bot API for file access
+      - telegram_bot_api_data:/var/lib/telegram-bot-api
     restart: unless-stopped
     depends_on:
       redis:

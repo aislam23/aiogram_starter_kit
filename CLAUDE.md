@@ -8,42 +8,50 @@ Aiogram Starter Kit - a Telegram bot template built on Aiogram v3.20.0 with Dock
 
 ## Common Commands
 
+The project supports both `just` (cross-platform) and `make` (macOS/Linux). Use `just` for Windows compatibility.
+
 ### Development
 ```bash
-make dev           # Start with live logs
-make dev-d         # Start in background
-make stop          # Stop all services
-make restart-bot   # Restart only the bot container
-make logs-bot      # View bot logs
+just dev           # Start with live logs
+just dev-d         # Start in background
+just stop          # Stop all services
+just restart-bot   # Restart only the bot container
+just logs-bot      # View bot logs
 ```
 
 ### Database
 ```bash
-make db-shell                    # PostgreSQL console
-make db-migrate                  # Run pending migrations
-make db-migration-status         # Show applied migrations
-make create-migration NAME=name DESC="description"  # Create new migration
+just db-shell                              # PostgreSQL console
+just db-migrate                            # Run pending migrations
+just db-migration-status                   # Show applied migrations
+just create-migration name "description"   # Create new migration
 ```
 
 ### Testing & Debugging
 ```bash
-make test          # Run pytest in container
-make shell         # Bash inside bot container
-make status        # Show container status
+just test          # Run pytest in container
+just shell         # Bash inside bot container
+just status        # Show container status
 ```
 
 ### Production
 ```bash
-make prod          # Start production (validates .env.prod first)
-make prod-stop     # Stop production
+just prod          # Start production (validates .env.prod first)
+just prod-stop     # Stop production
 ```
 
 ### Local Bot API (файлы до 2GB)
 ```bash
-make dev-local     # Start with Local Bot API Server
-make api-status    # Check Local API status
-make api-logs      # View Local API logs
-make stop-local    # Stop Local API environment
+just dev-local     # Start with Local Bot API Server
+just api-status    # Check Local API status
+just api-logs      # View Local API logs
+just stop-local    # Stop Local API environment
+```
+
+### Cross-Platform Scripts
+```bash
+python scripts/init_project.py  # Interactive project setup
+python scripts/deploy.py        # Production deployment
 ```
 
 ## Architecture

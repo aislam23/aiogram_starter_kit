@@ -12,7 +12,7 @@ YELLOW = \033[1;33m
 BLUE = \033[0;34m
 NC = \033[0m # No Color
 
-.PHONY: help build up down logs restart clean dev prod shell db-shell redis-shell test setup-remote-repo dev-local dev-local-logs stop-local api-status api-logs api-restart
+.PHONY: help build up down logs restart clean dev prod shell db-shell redis-shell test setup-remote-repo dev-local dev-local-logs stop-local api-status api-logs api-restart ci-deploy ci-health ci-logs
 
 help: ## Show this help message
 	@echo "$(BLUE)Available commands:$(NC)"
@@ -72,7 +72,19 @@ prod-stop: ## Stop production environment
 prod-deploy: ## Deploy to production (with validation)
 	@echo "$(GREEN)🚀 Deploying to production...$(NC)"
 	@$(MAKE) validate-prod
-	./scripts/deploy.sh
+	python scripts/deploy.py
+
+# CI/CD commands (для GitHub Actions)
+ci-deploy: ## Deploy for CI/CD (no colors, strict checks)
+	@python scripts/deploy.py --ci
+
+ci-health: ## Check all services health
+	@$(DOCKER_COMPOSE_PROD) ps
+	@echo "Checking bot container..."
+	@$(DOCKER_COMPOSE_PROD) exec -T bot python -c "print('Bot container: OK')" || (echo "Bot container: FAILED" && exit 1)
+
+ci-logs: ## Show last 50 lines of bot logs
+	@$(DOCKER_COMPOSE_PROD) logs --tail=50 bot
 
 # Build commands
 build: ## Build development images
@@ -131,9 +143,10 @@ clean-all: ## Deep clean - remove everything including volumes
 	docker system prune -af --volumes
 	docker volume rm $(shell docker volume ls -q | grep $(PROJECT_NAME)) 2>/dev/null || true
 
-clean-macos: ## Clean macOS artifacts (.DS_Store, etc.)
-	@echo "$(YELLOW)🧹 Cleaning macOS artifacts...$(NC)"
-	./scripts/clean-macos.sh
+clean-macos: ## Clean macOS/Windows artifacts (.DS_Store, Thumbs.db, etc.)
+	@echo "$(YELLOW)🧹 Cleaning system artifacts...$(NC)"
+	@python -c "import pathlib; [f.unlink() for p in ['.DS_Store', 'Thumbs.db', 'desktop.ini'] for f in pathlib.Path('.').rglob(p)]" 2>/dev/null || true
+	@echo "$(GREEN)✅ Cleaned$(NC)"
 
 # Status and info
 status: ## Show status of all services
@@ -238,7 +251,7 @@ setup-new-project: ## Prepare template for new project (removes git history)
 
 init-project: ## 🚀 Interactive setup for new project (recommended!)
 	@echo "$(GREEN)🎯 Starting interactive project setup...$(NC)"
-	@./scripts/init-project.sh
+	@python scripts/init_project.py
 
 setup-remote-repo: ## Add remote repository to existing project
 	@echo "$(BLUE)📡 Setting up remote repository...$(NC)"

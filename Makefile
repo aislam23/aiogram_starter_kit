@@ -2,8 +2,23 @@
 
 # Variables
 PROJECT_NAME = aiogram_starter_kit
-DOCKER_COMPOSE = docker-compose
-DOCKER_COMPOSE_PROD = docker-compose -f docker-compose.prod.yml
+
+# Auto-detect Docker Compose: prefer v2 plugin, fall back to v1 standalone
+DOCKER_COMPOSE := $(shell \
+	if docker compose version >/dev/null 2>&1; then \
+		echo "docker compose"; \
+	elif command -v docker-compose >/dev/null 2>&1; then \
+		echo "docker-compose"; \
+	fi)
+DOCKER_COMPOSE_PROD := $(DOCKER_COMPOSE) -f docker-compose.prod.yml
+
+# Auto-detect Python: prefer python3, fall back to python
+PYTHON := $(shell \
+	if command -v python3 >/dev/null 2>&1; then \
+		echo "python3"; \
+	elif command -v python >/dev/null 2>&1; then \
+		echo "python"; \
+	fi)
 
 # Colors for output
 RED = \033[0;31m
@@ -12,6 +27,57 @@ YELLOW = \033[1;33m
 BLUE = \033[0;34m
 NC = \033[0m # No Color
 
+# ── Pre-flight dependency checks ────────────────────────────────
+.PHONY: _check-docker _check-docker-running _check-python _check-git
+
+_check-docker:
+	@if [ -z "$(DOCKER_COMPOSE)" ]; then \
+		echo "$(RED)❌ Docker Compose не установлен.$(NC)"; \
+		echo ""; \
+		echo "Установите Docker (включает Compose v2):"; \
+		echo "  macOS:   brew install --cask docker"; \
+		echo "  Ubuntu:  https://docs.docker.com/engine/install/ubuntu/"; \
+		echo "  Windows: https://docs.docker.com/desktop/install/windows-install/"; \
+		echo ""; \
+		echo "Или установите docker-compose отдельно:"; \
+		echo "  pip install docker-compose"; \
+		exit 1; \
+	fi
+
+_check-docker-running: _check-docker
+	@if ! docker info >/dev/null 2>&1; then \
+		echo "$(RED)❌ Docker демон не запущен.$(NC)"; \
+		echo ""; \
+		echo "Запустите Docker:"; \
+		echo "  macOS/Windows: Откройте Docker Desktop"; \
+		echo "  Linux:         sudo systemctl start docker"; \
+		exit 1; \
+	fi
+
+_check-python:
+	@if [ -z "$(PYTHON)" ]; then \
+		echo "$(RED)❌ Python 3 не установлен.$(NC)"; \
+		echo ""; \
+		echo "Установите Python 3:"; \
+		echo "  macOS:   brew install python3"; \
+		echo "  Ubuntu:  sudo apt install python3"; \
+		echo "  Windows: https://www.python.org/downloads/"; \
+		exit 1; \
+	fi
+
+_check-git:
+	@if ! command -v git >/dev/null 2>&1; then \
+		echo "$(RED)❌ Git не установлен.$(NC)"; \
+		echo ""; \
+		echo "Установите Git:"; \
+		echo "  macOS:   brew install git  (или: xcode-select --install)"; \
+		echo "  Ubuntu:  sudo apt install git"; \
+		echo "  Windows: https://git-scm.com/download/win"; \
+		exit 1; \
+	fi
+
+# ═════════════════════════════════════════════════════════════════
+
 .PHONY: help build up down logs restart clean dev prod shell db-shell redis-shell test setup-remote-repo dev-local dev-local-logs stop-local api-status api-logs api-restart ci-deploy ci-health ci-logs
 
 help: ## Show this help message
@@ -19,32 +85,32 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(YELLOW)%-15s$(NC) %s\n", $$1, $$2}'
 
 # Development commands
-dev: ## Start development environment
+dev: _check-docker-running ## Start development environment
 	@echo "$(GREEN)🚀 Starting development environment...$(NC)"
 	$(DOCKER_COMPOSE) up --build
 
-dev-d: ## Start development environment in background
+dev-d: _check-docker-running ## Start development environment in background
 	@echo "$(GREEN)🚀 Starting development environment in background...$(NC)"
 	$(DOCKER_COMPOSE) up --build -d
 
-dev-tools: ## Start development environment with tools (pgAdmin)
+dev-tools: _check-docker-running ## Start development environment with tools (pgAdmin)
 	@echo "$(GREEN)🚀 Starting development environment with tools...$(NC)"
 	$(DOCKER_COMPOSE) --profile tools up --build -d
 
-stop: ## Stop development environment
+stop: _check-docker-running ## Stop development environment
 	@echo "$(YELLOW)⏹️  Stopping development environment...$(NC)"
 	$(DOCKER_COMPOSE) down
 
 # Local Bot API commands
-dev-local: ## Start with Local Bot API (2GB file limit)
+dev-local: _check-docker-running ## Start with Local Bot API (2GB file limit)
 	@echo "$(GREEN)🚀 Starting with Local Bot API...$(NC)"
 	$(DOCKER_COMPOSE) --profile local-api up --build -d
 
-dev-local-logs: ## Start with Local Bot API (foreground)
+dev-local-logs: _check-docker-running ## Start with Local Bot API (foreground)
 	@echo "$(GREEN)🚀 Starting with Local Bot API...$(NC)"
 	$(DOCKER_COMPOSE) --profile local-api up --build
 
-stop-local: ## Stop Local Bot API environment
+stop-local: _check-docker-running ## Stop Local Bot API environment
 	@echo "$(YELLOW)⏹️ Stopping Local Bot API...$(NC)"
 	$(DOCKER_COMPOSE) --profile local-api down
 
@@ -53,107 +119,105 @@ api-status: ## Check Local Bot API Server status
 		echo "$(GREEN)✅ Local Bot API is running$(NC)" || \
 		echo "$(RED)❌ Local Bot API is not available$(NC)"
 
-api-logs: ## Show Local Bot API Server logs
+api-logs: _check-docker-running ## Show Local Bot API Server logs
 	$(DOCKER_COMPOSE) logs -f telegram-bot-api
 
-api-restart: ## Restart Local Bot API Server
+api-restart: _check-docker-running ## Restart Local Bot API Server
 	$(DOCKER_COMPOSE) restart telegram-bot-api
 
 # Production commands
-prod: ## Start production environment
+prod: _check-docker-running validate-prod ## Start production environment
 	@echo "$(GREEN)🏭 Starting production environment...$(NC)"
-	@$(MAKE) validate-prod
 	$(DOCKER_COMPOSE_PROD) up --build -d
 
-prod-stop: ## Stop production environment
+prod-stop: _check-docker-running ## Stop production environment
 	@echo "$(YELLOW)⏹️  Stopping production environment...$(NC)"
 	$(DOCKER_COMPOSE_PROD) down
 
-prod-deploy: ## Deploy to production (with validation)
+prod-deploy: _check-docker-running _check-python validate-prod ## Deploy to production (with validation)
 	@echo "$(GREEN)🚀 Deploying to production...$(NC)"
-	@$(MAKE) validate-prod
-	python scripts/deploy.py
+	$(PYTHON) scripts/deploy.py
 
 # CI/CD commands (для GitHub Actions)
-ci-deploy: ## Deploy for CI/CD (no colors, strict checks)
-	@python scripts/deploy.py --ci
+ci-deploy: _check-docker-running _check-python ## Deploy for CI/CD (no colors, strict checks)
+	@$(PYTHON) scripts/deploy.py --ci
 
-ci-health: ## Check all services health
+ci-health: _check-docker-running ## Check all services health
 	@$(DOCKER_COMPOSE_PROD) ps
 	@echo "Checking bot container..."
 	@$(DOCKER_COMPOSE_PROD) exec -T bot python -c "print('Bot container: OK')" || (echo "Bot container: FAILED" && exit 1)
 
-ci-logs: ## Show last 50 lines of bot logs
+ci-logs: _check-docker-running ## Show last 50 lines of bot logs
 	@$(DOCKER_COMPOSE_PROD) logs --tail=50 bot
 
 # Build commands
-build: ## Build development images
+build: _check-docker-running ## Build development images
 	@echo "$(BLUE)🔨 Building development images...$(NC)"
 	$(DOCKER_COMPOSE) build
 
-build-prod: ## Build production images
+build-prod: _check-docker-running ## Build production images
 	@echo "$(BLUE)🔨 Building production images...$(NC)"
 	$(DOCKER_COMPOSE_PROD) build --no-cache
 
 # Logs and monitoring
-logs: ## Show logs from all services
+logs: _check-docker-running ## Show logs from all services
 	$(DOCKER_COMPOSE) logs -f
 
-logs-bot: ## Show logs from bot service
+logs-bot: _check-docker-running ## Show logs from bot service
 	$(DOCKER_COMPOSE) logs -f bot
 
-logs-db: ## Show logs from database service
+logs-db: _check-docker-running ## Show logs from database service
 	$(DOCKER_COMPOSE) logs -f postgres
 
-logs-redis: ## Show logs from redis service
+logs-redis: _check-docker-running ## Show logs from redis service
 	$(DOCKER_COMPOSE) logs -f redis
 
 # Shell access
-shell: ## Access bot container shell
+shell: _check-docker-running ## Access bot container shell
 	@echo "$(BLUE)🐚 Accessing bot container shell...$(NC)"
 	$(DOCKER_COMPOSE) exec bot bash
 
-db-shell: ## Access PostgreSQL shell
+db-shell: _check-docker-running ## Access PostgreSQL shell
 	@echo "$(BLUE)🗄️  Accessing PostgreSQL shell...$(NC)"
 	$(DOCKER_COMPOSE) exec postgres psql -U ${POSTGRES_USER:-botuser} -d ${POSTGRES_DB:-botdb}
 
-redis-shell: ## Access Redis shell
+redis-shell: _check-docker-running ## Access Redis shell
 	@echo "$(BLUE)📦 Accessing Redis shell...$(NC)"
 	$(DOCKER_COMPOSE) exec redis redis-cli
 
 # Restart services
-restart: ## Restart all services
+restart: _check-docker-running ## Restart all services
 	@echo "$(YELLOW)🔄 Restarting all services...$(NC)"
 	$(DOCKER_COMPOSE) restart
 
-restart-bot: ## Restart bot service
+restart-bot: _check-docker-running ## Restart bot service
 	@echo "$(YELLOW)🔄 Restarting bot service...$(NC)"
 	$(DOCKER_COMPOSE) restart bot
 
 # Cleanup commands
-clean: ## Clean up containers, volumes, and images
+clean: _check-docker-running ## Clean up containers, volumes, and images
 	@echo "$(RED)🧹 Cleaning up Docker resources...$(NC)"
 	$(DOCKER_COMPOSE) down -v --remove-orphans
 	docker system prune -af --volumes
 
-clean-all: ## Deep clean - remove everything including volumes
+clean-all: _check-docker-running ## Deep clean - remove everything including volumes
 	@echo "$(RED)🧹 Deep cleaning - removing all Docker resources...$(NC)"
 	$(DOCKER_COMPOSE) down -v --remove-orphans
 	$(DOCKER_COMPOSE_PROD) down -v --remove-orphans
 	docker system prune -af --volumes
 	docker volume rm $(shell docker volume ls -q | grep $(PROJECT_NAME)) 2>/dev/null || true
 
-clean-macos: ## Clean macOS/Windows artifacts (.DS_Store, Thumbs.db, etc.)
+clean-macos: _check-python ## Clean macOS/Windows artifacts (.DS_Store, Thumbs.db, etc.)
 	@echo "$(YELLOW)🧹 Cleaning system artifacts...$(NC)"
-	@python -c "import pathlib; [f.unlink() for p in ['.DS_Store', 'Thumbs.db', 'desktop.ini'] for f in pathlib.Path('.').rglob(p)]" 2>/dev/null || true
+	@$(PYTHON) -c "import pathlib; [f.unlink() for p in ['.DS_Store', 'Thumbs.db', 'desktop.ini'] for f in pathlib.Path('.').rglob(p)]" 2>/dev/null || true
 	@echo "$(GREEN)✅ Cleaned$(NC)"
 
 # Status and info
-status: ## Show status of all services
+status: _check-docker-running ## Show status of all services
 	@echo "$(BLUE)📊 Service status:$(NC)"
 	$(DOCKER_COMPOSE) ps
 
-health: ## Check health of all services
+health: _check-docker-running ## Check health of all services
 	@echo "$(BLUE)🏥 Health check:$(NC)"
 	$(DOCKER_COMPOSE) ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
 
@@ -203,7 +267,7 @@ validate-prod: ## Validate production environment file
 	fi
 	@echo "$(GREEN)✅ Production environment looks good!$(NC)"
 
-setup-new-project: ## Prepare template for new project (removes git history)
+setup-new-project: _check-git ## Prepare template for new project (removes git history)
 	@echo "$(YELLOW)🚀 Preparing template for new project...$(NC)"
 	@echo "$(RED)⚠️  This will remove .git directory! Press Ctrl+C to cancel$(NC)"
 	@read -p "Enter new project name: " project_name; \
@@ -249,11 +313,11 @@ setup-new-project: ## Prepare template for new project (removes git history)
 		fi; \
 	fi
 
-init-project: ## 🚀 Interactive setup for new project (recommended!)
+init-project: _check-python ## 🚀 Interactive setup for new project (recommended!)
 	@echo "$(GREEN)🎯 Starting interactive project setup...$(NC)"
-	@python scripts/init_project.py
+	@$(PYTHON) scripts/init_project.py
 
-setup-remote-repo: ## Add remote repository to existing project
+setup-remote-repo: _check-git ## Add remote repository to existing project
 	@echo "$(BLUE)📡 Setting up remote repository...$(NC)"
 	@read -p "Enter remote repository URL: " repo_url; \
 	if [ -z "$$repo_url" ]; then \
@@ -288,32 +352,32 @@ setup-remote-repo: ## Add remote repository to existing project
 	fi
 
 # Testing
-test: ## Run tests in bot container
+test: _check-docker-running ## Run tests in bot container
 	@echo "$(BLUE)🧪 Running tests...$(NC)"
 	$(DOCKER_COMPOSE) exec bot python -m pytest tests/ -v
 
 # Database operations
-db-backup: ## Create database backup
+db-backup: _check-docker-running ## Create database backup
 	@echo "$(BLUE)💾 Creating database backup...$(NC)"
 	$(DOCKER_COMPOSE) exec postgres pg_dump -U ${POSTGRES_USER:-botuser} ${POSTGRES_DB:-botdb} > backup_$(shell date +%Y%m%d_%H%M%S).sql
 
-db-migrate: ## Run database migrations
+db-migrate: _check-docker-running ## Run database migrations
 	@echo "$(BLUE)🔄 Running database migrations...$(NC)"
 	$(DOCKER_COMPOSE) exec bot python -c "import asyncio; from app.database import db; asyncio.run(db.run_migrations())"
 
-db-migration-status: ## Show migration status
+db-migration-status: _check-docker-running ## Show migration status
 	@echo "$(BLUE)📊 Showing migration status...$(NC)"
 	$(DOCKER_COMPOSE) exec bot python -c "import asyncio; from app.database import db; migrations = asyncio.run(db.get_migration_history()); [print(f'{m.version} - {m.name} ({m.applied_at})') for m in migrations]"
 
-create-migration: ## Create new migration (usage: make create-migration NAME=migration_name DESC="Description")
+create-migration: _check-python ## Create new migration (usage: make create-migration NAME=migration_name DESC="Description")
 	@if [ -z "$(NAME)" ]; then \
 		echo "$(RED)❌ Please provide migration name: make create-migration NAME=migration_name DESC='Description'$(NC)"; \
 		exit 1; \
 	fi
 	@echo "$(BLUE)📝 Creating migration: $(NAME)$(NC)"
-	@python scripts/create_migration.py $(NAME) "$(DESC)"
+	@$(PYTHON) scripts/create_migration.py $(NAME) "$(DESC)"
 
 # Update dependencies
-update-deps: ## Update Python dependencies
+update-deps: _check-docker-running ## Update Python dependencies
 	@echo "$(BLUE)📦 Updating dependencies...$(NC)"
 	$(DOCKER_COMPOSE) exec bot pip list --outdated

@@ -29,6 +29,73 @@ make init-project  # 🚀 Интерактивный мастер настрой
 make dev-d         # Запуск готового бота
 ```
 
+### 🤖 Настройка компьютера с помощью нейронки
+
+Если на вашем компьютере ещё не установлены необходимые программы, скопируйте промпт ниже и отправьте его в ChatGPT, Claude или другую нейронку. Она определит вашу ОС и установит всё, что нужно.
+
+<details>
+<summary>📋 Нажмите, чтобы раскрыть промпт</summary>
+
+```text
+Мне нужно подготовить компьютер к разработке Telegram-бота на базе шаблона Aiogram Starter Kit.
+Определи мою операционную систему и установи всё необходимое.
+
+## Обязательные программы
+
+1. **Git** — система контроля версий. Нужна для клонирования шаблона и работы с репозиторием.
+2. **Docker Desktop** (включает Docker Engine и Docker Compose) — все сервисы проекта (бот, PostgreSQL, Redis) запускаются в контейнерах. Без Docker ничего не работает.
+3. **Python 3.11+** — нужен для запуска скрипта интерактивной настройки проекта (scripts/init_project.py).
+
+## Рекомендуемые программы
+
+4. **Just** (command runner) — кроссплатформенная альтернатива Make. Удобнее на Windows, где Make не предустановлен. На macOS/Linux можно использовать Make, который уже есть в системе.
+5. **GitHub CLI (gh)** — позволяет создать GitHub-репозиторий прямо из терминала во время настройки проекта. Без него репозиторий нужно будет создать вручную на сайте.
+
+## Инструкции по установке
+
+### macOS
+- Git: обычно уже установлен. Проверь: `git --version`. Если нет — установится при первом вызове или через `brew install git`.
+- Docker Desktop: скачать с https://docs.docker.com/desktop/setup/install/mac-install/ или `brew install --cask docker`. После установки — запустить Docker Desktop и дождаться, пока иконка в трее перестанет анимироваться.
+- Python: `brew install python@3.11` или скачать с https://www.python.org/downloads/
+- Just: `brew install just`
+- GitHub CLI: `brew install gh`
+
+### Windows
+- Git: скачать с https://git-scm.com/downloads/win или `winget install Git.Git`
+- Docker Desktop: скачать с https://docs.docker.com/desktop/setup/install/windows-install/ или `winget install Docker.DockerDesktop`. После установки — перезагрузить компьютер и запустить Docker Desktop.
+- Python: скачать с https://www.python.org/downloads/ (при установке обязательно поставить галочку "Add Python to PATH") или `winget install Python.Python.3.11`
+- Just: `winget install Casey.Just`
+- GitHub CLI: `winget install GitHub.cli`
+
+### Linux (Ubuntu/Debian)
+- Git: `sudo apt update && sudo apt install -y git`
+- Docker: установить по официальной инструкции https://docs.docker.com/engine/install/ubuntu/, затем `sudo apt install -y docker-compose-plugin`. Добавить пользователя в группу docker: `sudo usermod -aG docker $USER` и перелогиниться.
+- Python: `sudo apt install -y python3 python3-pip`
+- Just: `curl -q 'https://proget.makedeb.org/debian-feeds/prebuilt-mpr.pub' | gpg --dearmor | sudo tee /usr/share/keyrings/prebuilt-mpr-archive-keyring.gpg > /dev/null && echo "deb [signed-by=/usr/share/keyrings/prebuilt-mpr-archive-keyring.gpg] https://proget.makedeb.org prebuilt-mpr $(lsb_release -cs)" | sudo tee /etc/apt/sources.list.d/prebuilt-mpr.list && sudo apt update && sudo apt install -y just`
+- GitHub CLI: смотри https://github.com/cli/cli/blob/trunk/docs/install_linux.md
+
+## После установки
+
+Проверь, что всё работает, выполнив эти команды в терминале:
+```
+git --version
+docker --version
+docker compose version
+python3 --version
+```
+
+Если все четыре команды вернули версии без ошибок — компьютер готов.
+
+Далее я склонирую и настрою проект:
+```
+git clone git@github.com:aislam23/aiogram_starter_kit.git my_awesome_bot
+cd my_awesome_bot
+make init-project
+```
+```
+
+</details>
+
 **Готово!** 🎉 Интерактивный мастер:
 - Соберет информацию о боте (токен, username, описание)
 - Настроит все конфигурационные файлы

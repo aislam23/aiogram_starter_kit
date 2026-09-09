@@ -2,10 +2,11 @@
 Сервис рассылки сообщений
 """
 import asyncio
-from typing import List, Optional, Dict, Any
+from typing import Dict, Optional
+
 from aiogram import Bot
-from aiogram.types import Message, InlineKeyboardMarkup
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.types import InlineKeyboardMarkup, Message
 from loguru import logger
 
 from app.database import db
@@ -13,10 +14,10 @@ from app.database import db
 
 class BroadcastService:
     """Сервис для рассылки сообщений"""
-    
+
     def __init__(self, bot: Bot):
         self.bot = bot
-    
+
     async def send_broadcast(
         self,
         message: Message,
@@ -25,34 +26,34 @@ class BroadcastService:
     ) -> Dict[str, int]:
         """
         Отправка рассылки всем пользователям
-        
+
         Args:
             message: Сообщение для рассылки
             custom_keyboard: Кастомная клавиатура
             progress_callback: Функция для отслеживания прогресса
-            
+
         Returns:
             Словарь со статистикой отправки
         """
         users = await db.get_active_users()
-        
+
         stats = {
             "total": len(users),
             "sent": 0,
             "failed": 0,
             "blocked": 0
         }
-        
+
         logger.info(f"Начинаем рассылку для {len(users)} пользователей")
-        
+
         # Отправляем сообщения пачками по 30 штук
         batch_size = 30
         delay_between_batches = 1  # секунда между пачками
-        
+
         for i in range(0, len(users), batch_size):
             batch = users[i:i + batch_size]
             tasks = []
-            
+
             for user in batch:
                 task = self._send_single_message(
                     user_id=user.id,
@@ -60,10 +61,10 @@ class BroadcastService:
                     custom_keyboard=custom_keyboard
                 )
                 tasks.append(task)
-            
+
             # Выполняем пачку параллельно
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
+
             # Обрабатываем результаты
             for result in results:
                 if isinstance(result, Exception):
@@ -75,18 +76,18 @@ class BroadcastService:
                     stats["sent"] += 1
                 else:
                     stats["failed"] += 1
-            
+
             # Вызываем callback для обновления прогресса
             if progress_callback:
                 await progress_callback(stats)
-            
+
             # Пауза между пачками
             if i + batch_size < len(users):
                 await asyncio.sleep(delay_between_batches)
-        
+
         logger.info(f"Рассылка завершена. Отправлено: {stats['sent']}, Ошибок: {stats['failed']}, Заблокировано: {stats['blocked']}")
         return stats
-    
+
     async def _send_single_message(
         self,
         user_id: int,
@@ -95,12 +96,12 @@ class BroadcastService:
     ) -> bool:
         """
         Отправка одного сообщения пользователю
-        
+
         Args:
             user_id: ID пользователя
             message: Сообщение для отправки
             custom_keyboard: Кастомная клавиатура
-            
+
         Returns:
             True если сообщение отправлено успешно
         """
@@ -176,9 +177,9 @@ class BroadcastService:
             else:
                 # Если тип сообщения не поддерживается
                 return False
-            
+
             return True
-            
+
         except TelegramForbiddenError:
             # Пользователь заблокировал бота
             logger.debug(f"Пользователь {user_id} заблокировал бота")
@@ -190,4 +191,4 @@ class BroadcastService:
         except Exception as e:
             # Неожиданные ошибки
             logger.error(f"Неожиданная ошибка при отправке пользователю {user_id}: {e}")
-            return False 
+            return False

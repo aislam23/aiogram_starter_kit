@@ -1,0 +1,34 @@
+[project]
+name = "aiogram-starter-kit"
+version = "2.1.0"
+description = "Telegram bot template on Aiogram v3, adapted for AI agents"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = [".venv", "docs/examples", "scripts/init-project.sh"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",   # длина строк — сообщения бота длинные, это нормально
+    "B008",   # Field(...) в сигнатурах pydantic
+    "UP007",  # Optional[...] допускается ради единообразия с существующим кодом
+    "UP035",
+    "UP006",
+    "B904",
+    "UP038",  # isinstance((A, B)) читается не хуже A | B
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "tests"]

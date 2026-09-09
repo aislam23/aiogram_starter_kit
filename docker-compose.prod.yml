@@ -9,6 +9,8 @@ services:
       - .env.prod
     environment:
       - ENV=production
+    volumes:
+      - ./logs:/app/logs
     restart: always
     depends_on:
       redis:

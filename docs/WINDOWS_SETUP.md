@@ -86,7 +86,7 @@ just --version
 
 ```powershell
 # Инициализация проекта
-python scripts/init_project.py
+python scripts/init_project.py --name my_bot --admin-id <telegram_id>
 
 # Деплой в продакшен
 python scripts/deploy.py
@@ -120,10 +120,10 @@ cd YOUR_REPO
 
 ```powershell
 # С Just
-just init-project
+just init my_bot <telegram_id>
 
 # Или с Python
-python scripts/init_project.py
+python scripts/init_project.py --name my_bot --admin-id <telegram_id>
 ```
 
 ### 3. Запуск бота
@@ -171,7 +171,7 @@ docker-compose down
 | `make db-shell` | `just db-shell` | `docker-compose exec postgres psql -U botuser -d botdb` |
 | `make test` | `just test` | `docker-compose exec bot python -m pytest tests/ -v` |
 | `make prod` | `just prod` | `docker-compose -f docker-compose.prod.yml up --build -d` |
-| `make init-project` | `just init-project` | `python scripts/init_project.py` |
+| `make init NAME=my_bot ADMIN_ID=<id>` | `just init my_bot <id>` | `python scripts/init_project.py --name my_bot --admin-id <id>` |
 | `make restart-bot` | `just restart-bot` | `docker-compose restart bot` |
 
 ---

@@ -2,6 +2,7 @@
 
 # Variables
 PROJECT_NAME = aiogram_starter_kit
+VENV_PYTHON = $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo $(PYTHON))
 
 # Auto-detect Docker Compose: prefer v2 plugin, fall back to v1 standalone
 DOCKER_COMPOSE := $(shell \
@@ -78,7 +79,7 @@ _check-git:
 
 # ═════════════════════════════════════════════════════════════════
 
-.PHONY: help build up down logs restart clean dev prod shell db-shell redis-shell test setup-remote-repo dev-local dev-local-logs stop-local api-status api-logs api-restart ci-deploy ci-health ci-logs
+.PHONY: help build up down logs restart clean dev prod shell db-shell redis-shell test test-docker init-project init set-token doctor check-secrets venv lint check setup-remote-repo dev-local dev-local-logs stop-local api-status api-logs api-restart ci-deploy ci-health ci-logs
 
 help: ## Show this help message
 	@echo "$(BLUE)Available commands:$(NC)"
@@ -267,55 +268,30 @@ validate-prod: ## Validate production environment file
 	fi
 	@echo "$(GREEN)✅ Production environment looks good!$(NC)"
 
-setup-new-project: _check-git ## Prepare template for new project (removes git history)
-	@echo "$(YELLOW)🚀 Preparing template for new project...$(NC)"
-	@echo "$(RED)⚠️  This will remove .git directory! Press Ctrl+C to cancel$(NC)"
-	@read -p "Enter new project name: " project_name; \
-	read -p "Enter remote repository URL (optional, press Enter to skip): " repo_url; \
-	current_dir=$$(basename $$(pwd)); \
-	if [ -d .git ]; then \
-		rm -rf .git; \
-		echo "$(GREEN)✅ Removed old Git history$(NC)"; \
-	fi; \
-	git init; \
-	git add .; \
-	git commit -m "Initial commit: $$project_name"; \
-	if [ -n "$$repo_url" ]; then \
-		echo "$(BLUE)📡 Setting up remote repository...$(NC)"; \
-		git branch -M main; \
-		git remote add origin "$$repo_url"; \
-		if git push -u origin main; then \
-			echo "$(GREEN)✅ Project successfully pushed to remote repository!$(NC)"; \
-		else \
-			echo "$(RED)❌ Failed to push to remote repository$(NC)"; \
-			echo "$(BLUE)🔧 You can set it up later with:$(NC)"; \
-			echo "  git remote set-url origin $$repo_url"; \
-			echo "  git push -u origin main"; \
-		fi; \
-	else \
-		echo "$(GREEN)✅ Initialized new Git repository$(NC)"; \
-		echo "$(BLUE)📝 Next steps:$(NC)"; \
-		echo "  1. Edit .env file with your bot token"; \
-		echo "  2. Update README.md with project info"; \
-		echo "  3. git remote add origin your-repo-url"; \
-		echo "  4. git branch -M main"; \
-		echo "  5. git push -u origin main"; \
-	fi; \
-	if [ "$$current_dir" != "$$project_name" ]; then \
-		echo "$(BLUE)📁 Renaming project folder...$(NC)"; \
-		parent_dir=$$(dirname $$(pwd)); \
-		if [ -d "$$parent_dir/$$project_name" ]; then \
-			echo "$(RED)❌ Folder '$$project_name' already exists!$(NC)"; \
-		else \
-			cd "$$parent_dir" && mv "$$current_dir" "$$project_name"; \
-			echo "$(GREEN)✅ Folder renamed: $$current_dir → $$project_name$(NC)"; \
-			echo "$(BLUE)📍 Project location: $$parent_dir/$$project_name$(NC)"; \
-		fi; \
-	fi
+init-project: ## 🧙 Interactive setup wizard in the terminal (as before; for humans)
+	@./scripts/init-project.sh
 
-init-project: _check-python ## 🚀 Interactive setup for new project (recommended!)
-	@echo "$(GREEN)🎯 Starting interactive project setup...$(NC)"
-	@$(PYTHON) scripts/init_project.py
+init: _check-python ## 🚀 Non-interactive setup for agents (usage: make init NAME=my_bot ADMIN_ID=123)
+	@$(PYTHON) scripts/init_project.py $(if $(NAME),--name "$(NAME)") $(if $(ADMIN_ID),--admin-id "$(ADMIN_ID)") $(if $(DESC),--description "$(DESC)")
+
+set-token: _check-python ## 🔑 Safely store BOT_TOKEN (clipboard → browser page; never via chat)
+	@$(PYTHON) scripts/set_token.py
+
+doctor: _check-python ## 🩺 Check environment (Docker, .env, token, admins)
+	@$(PYTHON) scripts/doctor.py
+
+check-secrets: _check-python ## 🔍 Scan tracked files for leaked secrets
+	@$(PYTHON) scripts/check_secrets.py
+
+venv: _check-python ## 🐍 Create .venv with dev dependencies
+	@[ -d .venv ] || $(PYTHON) -m venv .venv
+	@.venv/bin/python -m pip install -q -r requirements-dev.txt
+	@echo "$(GREEN)✅ Dev dependencies installed$(NC)"
+
+lint: ## Lint with ruff
+	@$(VENV_PYTHON) -m ruff check .
+
+check: lint test check-secrets ## ✅ Lint + tests + secrets scan (no Docker)
 
 setup-remote-repo: _check-git ## Add remote repository to existing project
 	@echo "$(BLUE)📡 Setting up remote repository...$(NC)"
@@ -352,8 +328,10 @@ setup-remote-repo: _check-git ## Add remote repository to existing project
 	fi
 
 # Testing
-test: _check-docker-running ## Run tests in bot container
-	@echo "$(BLUE)🧪 Running tests...$(NC)"
+test: ## Run tests on host (no Docker; run `make venv` once)
+	@$(VENV_PYTHON) -m pytest
+
+test-docker: _check-docker-running ## Run tests inside the bot container
 	$(DOCKER_COMPOSE) exec bot python -m pytest tests/ -v
 
 # Database operations

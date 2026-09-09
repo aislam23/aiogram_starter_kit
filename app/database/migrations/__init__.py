@@ -2,7 +2,7 @@
 Пакет для управления миграциями базы данных
 """
 
-from .manager import MigrationManager
 from .base import Migration
+from .manager import MigrationManager
 
-__all__ = ['MigrationManager', 'Migration'] 
+__all__ = ['MigrationManager', 'Migration']

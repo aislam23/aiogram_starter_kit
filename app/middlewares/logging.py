@@ -1,15 +1,16 @@
 """
 Middleware для логирования запросов
 """
-from typing import Callable, Dict, Any, Awaitable
+from typing import Any, Awaitable, Callable, Dict
+
 from aiogram import BaseMiddleware
-from aiogram.types import TelegramObject, Message, CallbackQuery
+from aiogram.types import CallbackQuery, Message, TelegramObject
 from loguru import logger
 
 
 class LoggingMiddleware(BaseMiddleware):
     """Middleware для логирования всех входящих обновлений"""
-    
+
     async def __call__(
         self,
         handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
@@ -17,7 +18,7 @@ class LoggingMiddleware(BaseMiddleware):
         data: Dict[str, Any]
     ) -> Any:
         """Основной метод middleware"""
-        
+
         # Логируем входящие сообщения
         if isinstance(event, Message):
             user = event.from_user
@@ -25,7 +26,7 @@ class LoggingMiddleware(BaseMiddleware):
                 f"📥 Message from {user.id} (@{user.username}): "
                 f"'{event.text[:50] if event.text else 'No text'}'"
             )
-        
+
         # Логируем callback запросы
         elif isinstance(event, CallbackQuery):
             user = event.from_user
@@ -33,7 +34,7 @@ class LoggingMiddleware(BaseMiddleware):
                 f"🔘 Callback from {user.id} (@{user.username}): "
                 f"'{event.data}'"
             )
-        
+
         # Выполняем обработчик
         try:
             result = await handler(event, data)

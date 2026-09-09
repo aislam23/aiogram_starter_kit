@@ -1,28 +1,46 @@
-# GitHub Actions workflow для автоматического деплоя на сервер
-# Запускается при пуше в main ветку
+# GitHub Actions: сначала проверки (линтер + тесты без Docker), затем деплой на сервер.
 #
-# Необходимые секреты (Settings → Secrets and variables → Actions):
+# Необходимые секреты для деплоя (Settings → Secrets and variables → Actions):
 # - SERVER_HOST: IP-адрес или домен сервера
 # - SERVER_USER: имя пользователя SSH (например, deploy)
 # - SSH_PRIVATE_KEY: приватный SSH ключ (содержимое файла ~/.ssh/id_ed25519)
-# - PROJECT_PATH: путь к проекту на сервере (например, /home/deploy/aiogram_starter_kit)
+# - PROJECT_PATH: путь к проекту на сервере (например, /home/deploy/my_bot)
+#
+# Если секреты не заданы, job deploy будет пропущен, а проверки всё равно выполнятся.
 
-name: Deploy to Production
+name: Check and Deploy
 
 on:
   push:
     branches: [main]
-
-  # Позволяет запускать workflow вручную из вкладки Actions
+  pull_request:
   workflow_dispatch:
 
 jobs:
+  check:
+    name: Lint, tests, secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m ruff check .
+      - run: python -m pytest
+      - run: python scripts/check_secrets.py
+
   deploy:
     name: Deploy Bot
+    needs: check
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-
+    env:
+      HAS_DEPLOY_SECRETS: ${{ secrets.SERVER_HOST != '' }}
     steps:
       - name: Deploy via SSH
+        if: env.HAS_DEPLOY_SECRETS == 'true'
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -43,3 +61,6 @@ jobs:
             make ci-health
 
             echo "=== Деплой завершен успешно ==="
+      - name: Skip
+        if: env.HAS_DEPLOY_SECRETS != 'true'
+        run: echo "Секреты деплоя не заданы — пропускаю"

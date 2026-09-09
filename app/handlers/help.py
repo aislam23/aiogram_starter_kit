@@ -14,9 +14,9 @@ router = Router(name="help")
 async def help_command(message: types.Message) -> None:
     """Обработчик команды /help"""
     user = message.from_user
-    
+
     logger.info(f"ℹ️ User {user.id} requested help")
-    
+
     help_text = (
         f"🆘 <b>Помощь по боту</b>\n\n"
         f"📋 <b>Доступные команды:</b>\n"
@@ -29,7 +29,7 @@ async def help_command(message: types.Message) -> None:
         f"• Контейнеризация: Docker\n\n"
         f"💬 Если у вас есть вопросы, обращайтесь к разработчику."
     )
-    
+
     await message.answer(help_text)
 
 
@@ -37,9 +37,9 @@ async def help_command(message: types.Message) -> None:
 async def status_command(message: types.Message) -> None:
     """Обработчик команды /status"""
     user = message.from_user
-    
+
     logger.info(f"📊 User {user.id} requested status")
-    
+
     status_text = (
         f"📊 <b>Статус бота</b>\n\n"
         f"✅ Бот активен и работает\n"
@@ -49,5 +49,5 @@ async def status_command(message: types.Message) -> None:
         f"📡 API Telegram: Доступен\n\n"
         f"⏰ Время проверки: {message.date.strftime('%H:%M:%S %d.%m.%Y')}"
     )
-    
+
     await message.answer(status_text)

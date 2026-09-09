@@ -2,19 +2,19 @@
 Админские хендлеры
 """
 import re
-from datetime import datetime
-from typing import Optional
-from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery
+
+from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, Message
 from loguru import logger
 
 from app.config import settings
 from app.database import db
-from app.states import AdminStates
+from app.filters import IsAdmin
 from app.keyboards import AdminKeyboards
 from app.services import BroadcastService
+from app.states import AdminStates
 
 router = Router()
 
@@ -24,26 +24,42 @@ def is_admin(user_id: int) -> bool:
     return settings.is_admin(user_id)
 
 
+@router.message(Command("cancel"), IsAdmin())
+async def cancel_any_state(message: Message, state: FSMContext):
+    """Отмена любого состояния админа.
+
+    Объявлен раньше хендлеров состояний, иначе /cancel во время рассылки
+    будет воспринят как текст рассылки. IsAdmin() нужен, чтобы не перехватывать
+    /cancel у обычных пользователей — их роутеры получат команду сами.
+    """
+    current_state = await state.get_state()
+    if current_state:
+        await state.clear()
+        await message.answer("❌ Операция отменена")
+    else:
+        await message.answer("ℹ️ Нет активных операций для отмены")
+
+
 @router.message(Command("admin"))
 async def admin_command(message: Message, bot: Bot):
     """Обработчик команды /admin"""
     if not is_admin(message.from_user.id):
         await message.answer("❌ У вас нет прав администратора")
         return
-    
+
     # Получаем статистику бота
     stats = await db.get_bot_stats()
     if not stats:
         # Если статистики нет, создаем её
         stats = await db.update_bot_stats()
-    
+
     # Получаем актуальные данные
     total_users = await db.get_users_count()
     active_users = await db.get_active_users_count()
-    
+
     # Форматируем время последнего запуска
     last_restart = stats.last_restart.strftime("%d.%m.%Y %H:%M:%S")
-    
+
     # Формируем сообщение со статистикой
     text = f"""
 🔧 <b>Админская панель</b>
@@ -56,7 +72,7 @@ async def admin_command(message: Message, bot: Bot):
 
 Выберите действие:
 """
-    
+
     await message.answer(
         text=text,
         reply_markup=AdminKeyboards.main_admin_menu()
@@ -69,16 +85,16 @@ async def start_broadcast(callback: CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         await callback.answer("❌ У вас нет прав администратора")
         return
-    
+
     await state.set_state(AdminStates.broadcast_message)
-    
+
     await callback.message.edit_text(
         "📤 <b>Создание рассылки</b>\n\n"
         "Отправьте сообщение любого типа (текст, фото, видео, документ и т.д.), "
         "которое хотите разослать всем пользователям бота.\n\n"
         "Для отмены введите /cancel"
     )
-    
+
     await callback.answer()
 
 
@@ -88,13 +104,13 @@ async def receive_broadcast_message(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await state.clear()
         return
-    
+
     # Сохраняем сообщение в состояние
     await state.update_data(broadcast_message=message)
-    
+
     # Получаем количество пользователей для рассылки
     users_count = await db.get_active_users_count()
-    
+
     await message.answer(
         f"✅ <b>Сообщение получено!</b>\n\n"
         f"👥 Количество получателей: <b>{users_count}</b>\n\n"
@@ -107,7 +123,7 @@ async def receive_broadcast_message(message: Message, state: FSMContext):
 async def add_button_to_broadcast(callback: CallbackQuery, state: FSMContext):
     """Добавление кнопки к рассылке"""
     await state.set_state(AdminStates.broadcast_button)
-    
+
     await callback.message.edit_text(
         "🔗 <b>Добавление кнопки</b>\n\n"
         "Отправьте кнопку в формате:\n"
@@ -116,7 +132,7 @@ async def add_button_to_broadcast(callback: CallbackQuery, state: FSMContext):
         "<code>Наш сайт | https://example.com</code>\n\n"
         "Для отмены введите /cancel"
     )
-    
+
     await callback.answer()
 
 
@@ -126,11 +142,11 @@ async def receive_broadcast_button(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await state.clear()
         return
-    
+
     # Парсим кнопку
     button_pattern = r"^(.+?)\s*\|\s*(https?://.+)$"
     match = re.match(button_pattern, message.text.strip())
-    
+
     if not match:
         await message.answer(
             "❌ <b>Неверный формат кнопки!</b>\n\n"
@@ -139,19 +155,19 @@ async def receive_broadcast_button(message: Message, state: FSMContext):
             "Попробуйте еще раз или введите /cancel для отмены"
         )
         return
-    
+
     button_text = match.group(1).strip()
     button_url = match.group(2).strip()
-    
+
     # Сохраняем данные кнопки
     await state.update_data(
         button_text=button_text,
         button_url=button_url
     )
-    
+
     # Создаем превью кнопки
     preview_keyboard = AdminKeyboards.create_custom_button(button_text, button_url)
-    
+
     await message.answer(
         f"✅ <b>Кнопка создана!</b>\n\n"
         f"📝 Текст: <b>{button_text}</b>\n"
@@ -159,11 +175,10 @@ async def receive_broadcast_button(message: Message, state: FSMContext):
         f"Превью кнопки:",
         reply_markup=preview_keyboard
     )
-    
+
     # Переходим к подтверждению
-    data = await state.get_data()
     users_count = await db.get_active_users_count()
-    
+
     await message.answer(
         f"📤 <b>Подтверждение рассылки</b>\n\n"
         f"👥 Получателей: <b>{users_count}</b>\n"
@@ -177,7 +192,7 @@ async def receive_broadcast_button(message: Message, state: FSMContext):
 async def broadcast_without_button(callback: CallbackQuery, state: FSMContext):
     """Рассылка без кнопки"""
     users_count = await db.get_active_users_count()
-    
+
     await callback.message.edit_text(
         f"📤 <b>Подтверждение рассылки</b>\n\n"
         f"👥 Получателей: <b>{users_count}</b>\n"
@@ -185,7 +200,7 @@ async def broadcast_without_button(callback: CallbackQuery, state: FSMContext):
         f"Отправить рассылку?",
         reply_markup=AdminKeyboards.broadcast_confirm(users_count)
     )
-    
+
     await callback.answer()
 
 
@@ -195,15 +210,15 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
     if not is_admin(callback.from_user.id):
         await callback.answer("❌ У вас нет прав администратора")
         return
-    
+
     data = await state.get_data()
     broadcast_message = data.get("broadcast_message")
-    
+
     if not broadcast_message:
         await callback.message.edit_text("❌ Ошибка: сообщение для рассылки не найдено")
         await state.clear()
         return
-    
+
     # Создаем кнопку если есть
     custom_keyboard = None
     if data.get("button_text") and data.get("button_url"):
@@ -211,10 +226,10 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
             data["button_text"],
             data["button_url"]
         )
-    
+
     # Начинаем рассылку
     broadcast_service = BroadcastService(bot)
-    
+
     # Сообщение о начале рассылки
     progress_message = await callback.message.edit_text(
         "📤 <b>Рассылка запущена...</b>\n\n"
@@ -223,11 +238,11 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
         "❌ Ошибок: <b>0</b>\n"
         "🚫 Заблокировано: <b>0</b>"
     )
-    
+
     # Функция для обновления прогресса
     async def update_progress(stats: dict):
         progress_percent = int((stats["sent"] + stats["failed"] + stats["blocked"]) / stats["total"] * 100)
-        
+
         try:
             await progress_message.edit_text(
                 f"📤 <b>Рассылка в процессе...</b>\n\n"
@@ -239,7 +254,7 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
         except Exception:
             # Игнорируем ошибки обновления прогресса
             pass
-    
+
     # Запускаем рассылку
     try:
         final_stats = await broadcast_service.send_broadcast(
@@ -247,10 +262,10 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
             custom_keyboard=custom_keyboard,
             progress_callback=update_progress
         )
-        
+
         # Финальная статистика
         success_rate = int(final_stats["sent"] / final_stats["total"] * 100) if final_stats["total"] > 0 else 0
-        
+
         await progress_message.edit_text(
             f"✅ <b>Рассылка завершена!</b>\n\n"
             f"📊 <b>Итоговая статистика:</b>\n"
@@ -260,14 +275,14 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
             f"🚫 Заблокировали бота: <b>{final_stats['blocked']}</b>\n"
             f"📈 Успешность: <b>{success_rate}%</b>"
         )
-        
+
     except Exception as e:
         logger.error(f"Ошибка при рассылке: {e}")
         await progress_message.edit_text(
             f"❌ <b>Ошибка при рассылке!</b>\n\n"
             f"Описание: <code>{str(e)}</code>"
         )
-    
+
     await state.clear()
     await callback.answer()
 
@@ -286,17 +301,3 @@ async def cancel_broadcast_creation(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("❌ Создание рассылки отменено")
     await callback.answer()
-
-
-@router.message(Command("cancel"))
-async def cancel_any_state(message: Message, state: FSMContext):
-    """Отмена любого состояния"""
-    if not is_admin(message.from_user.id):
-        return
-    
-    current_state = await state.get_state()
-    if current_state:
-        await state.clear()
-        await message.answer("❌ Операция отменена")
-    else:
-        await message.answer("ℹ️ Нет активных операций для отмены") 

@@ -27,6 +27,15 @@ python := if `command -v python3 >/dev/null 2>&1; echo $?` == "0" {
     ""
 }
 
+# Python for host-side checks: prefer project venv
+venv_python := if path_exists(".venv/bin/python") == "true" {
+    ".venv/bin/python"
+} else if path_exists(".venv/Scripts/python.exe") == "true" {
+    ".venv/Scripts/python.exe"
+} else {
+    python
+}
+
 # Default command - show help
 default:
     @just --list
@@ -362,62 +371,60 @@ validate-prod:
 
     print('✅ Production environment looks good!')
 
-# 🚀 Interactive setup for new project (recommended!)
-init-project: check-python
-    @echo "🎯 Starting interactive project setup..."
-    {{python}} scripts/init_project.py
+# 🚀 Initialize new project (non-interactive; usage: just init name admin_id ["description"])
+init name admin_id description="Telegram бот на Aiogram": check-python
+    {{python}} scripts/init_project.py --name "{{name}}" --admin-id "{{admin_id}}" --description "{{description}}"
 
-# Add remote repository to existing project
-setup-remote-repo: check-git
-    #!/usr/bin/env python3
-    import subprocess
-    import sys
+# 🧙 Interactive setup wizard in the terminal (as before; for humans, not agents)
+init-project:
+    ./scripts/init-project.sh
 
-    repo_url = input('Enter remote repository URL: ').strip()
-    if not repo_url:
-        print('❌ Repository URL is required')
-        sys.exit(1)
+# 🔑 Safely store BOT_TOKEN: clipboard first, then a local browser page. Token never reaches the agent.
+set-token: check-python
+    {{python}} scripts/set_token.py
 
-    # Check if origin exists
-    result = subprocess.run(['git', 'remote', 'get-url', 'origin'],
-                          capture_output=True, text=True)
+# 🩺 Check environment: Docker, .env, token, admins (add --json for machine-readable output)
+doctor *args: check-python
+    {{python}} scripts/doctor.py {{args}}
 
-    if result.returncode == 0:
-        print('⚠️  Remote origin already exists')
-        replace = input('Replace existing origin? [y/N]: ').strip().lower()
-        if replace == 'y':
-            subprocess.run(['git', 'remote', 'set-url', 'origin', repo_url])
-            print('✅ Remote origin updated')
-        else:
-            print('ℹ️  Keeping existing remote origin')
-            sys.exit(0)
-    else:
-        subprocess.run(['git', 'remote', 'add', 'origin', repo_url])
-        print('✅ Remote origin added')
+# 🔍 Scan tracked files for leaked tokens/passwords
+check-secrets: check-python
+    {{python}} scripts/check_secrets.py
 
-    # Rename branch to main if needed
-    result = subprocess.run(['git', 'branch', '--show-current'],
-                          capture_output=True, text=True)
-    if result.stdout.strip() != 'main':
-        print('🔄 Renaming branch to main...')
-        subprocess.run(['git', 'branch', '-M', 'main'])
-
-    print('🚀 Pushing to remote repository...')
-    result = subprocess.run(['git', 'push', '-u', 'origin', 'main'])
-    if result.returncode == 0:
-        print('✅ Successfully pushed to remote repository!')
-    else:
-        print('❌ Failed to push to remote repository')
-        print('🔧 Try pushing manually: git push -u origin main')
+# 🐍 Create local venv with dev dependencies (for `just check` without Docker)
+venv: check-python
+    #!/usr/bin/env sh
+    set -e
+    if [ ! -d .venv ]; then
+        {{python}} -m venv .venv
+        echo "✅ Created .venv"
+    fi
+    if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=.venv/Scripts/python.exe; fi
+    $PY -m pip install -q -r requirements-dev.txt
+    echo "✅ Dev dependencies installed"
 
 # ═══════════════════════════════════════════════════════════════
 #                        TESTING
 # ═══════════════════════════════════════════════════════════════
 
-# Run tests in bot container
-test: check-docker
-    @echo "🧪 Running tests..."
+# Run tests on host (no Docker needed; run `just venv` once)
+test *args:
+    {{venv_python}} -m pytest {{args}}
+
+# Lint code with ruff
+lint:
+    {{venv_python}} -m ruff check .
+
+# ✅ Full check without Docker: lint + tests + secrets scan. Run before every commit.
+check: lint test check-secrets
+
+# Run tests inside the bot container
+test-docker: check-docker
     {{docker_compose}} exec bot python -m pytest tests/ -v
+
+# Show last N lines of JSON logs (usage: just logs-json 50)
+logs-json n="50":
+    @tail -n {{n}} logs/bot.jsonl 2>/dev/null || echo "logs/bot.jsonl not found — bot has not started yet"
 
 # ═══════════════════════════════════════════════════════════════
 #                   DATABASE OPERATIONS

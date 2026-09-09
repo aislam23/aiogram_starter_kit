@@ -5,14 +5,13 @@ import time
 from contextlib import suppress
 
 import aiohttp
-from aiogram import Router, F
-from aiogram.types import CallbackQuery
+from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
-from loguru import logger
+from aiogram.types import CallbackQuery
 
 from app.config import settings
-from app.keyboards import AdminKeyboards
 from app.database import db
+from app.keyboards import AdminKeyboards
 
 router = Router()
 

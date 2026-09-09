@@ -29,7 +29,7 @@ from aiogram.methods import (
     TelegramMethod,
 )
 from aiogram.methods.base import TelegramType
-from aiogram.types import CallbackQuery, Chat, Message, Update, User
+from aiogram.types import CallbackQuery, Chat, InlineKeyboardMarkup, Message, Update, User
 
 from app.handlers import setup_routers
 from app.middlewares import setup_middlewares
@@ -68,7 +68,8 @@ class FakeSession(BaseSession):
                 chat=Chat(id=method.chat_id, type="private"),
                 from_user=BOT_USER,
                 text=method.text,
-                reply_markup=method.reply_markup,
+                # В Message.reply_markup Telegram кладёт только inline-клавиатуру
+                reply_markup=method.reply_markup if isinstance(method.reply_markup, InlineKeyboardMarkup) else None,
             )
         if isinstance(method, (EditMessageText, EditMessageReplyMarkup)):
             return Message(
@@ -169,6 +170,28 @@ class BotHarness:
                     from_user=BOT_USER,
                     text=message_text,
                 ),
+            ),
+        )
+        await self.dp.feed_update(self.bot, update)
+        return [c for c in self.calls[before:] if isinstance(c, (SendMessage, EditMessageText))]
+
+    async def send_users_shared(
+        self, shared: List[dict], user: Optional[User] = None, request_id: int = 1
+    ) -> List[TelegramMethod[Any]]:
+        """Пользователь выбрал людей через кнопку request_users. shared: [{"user_id":..., "first_name":..., "username":...}]"""
+        from aiogram.types import SharedUser, UsersShared
+
+        user = user or make_user()
+        update_id, message_id = self._next_ids()
+        before = len(self.calls)
+        update = Update(
+            update_id=update_id,
+            message=Message(
+                message_id=message_id,
+                date=datetime.now(UTC),
+                chat=Chat(id=user.id, type="private", first_name=user.first_name),
+                from_user=user,
+                users_shared=UsersShared(request_id=request_id, users=[SharedUser(**item) for item in shared]),
             ),
         )
         await self.dp.feed_update(self.bot, update)

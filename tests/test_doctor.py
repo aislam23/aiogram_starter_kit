@@ -73,3 +73,9 @@ def test_main_json_output_and_exit_code(tmp_path, capsys):
     assert code == 1
     assert out["ok"] is False
     assert TOKEN not in json.dumps(out)
+
+
+def test_check_admins_accepts_usernames():
+    assert doctor.check_admins({"ADMIN_USER_IDS": "[]", "ADMIN_USERNAMES": '["artem"]'}).ok
+    assert doctor.check_admins({"ADMIN_USERNAMES": "@artem"}).ok
+    assert not doctor.check_admins({"ADMIN_USER_IDS": "[]", "ADMIN_USERNAMES": "[]"}).ok

@@ -6,10 +6,9 @@ import re
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from loguru import logger
 
-from app.config import settings
 from app.database import db
 from app.filters import IsAdmin
 from app.keyboards import AdminKeyboards
@@ -19,9 +18,8 @@ from app.states import AdminStates
 router = Router()
 
 
-def is_admin(user_id: int) -> bool:
-    """Проверка, является ли пользователь админом"""
-    return settings.is_admin(user_id)
+# Признак админа приходит из UserMiddleware как аргумент хендлера `is_admin: bool`
+# (учитывает ADMIN_USER_IDS и админов, распознанных по ADMIN_USERNAMES).
 
 
 @router.message(Command("cancel"), IsAdmin())
@@ -35,33 +33,33 @@ async def cancel_any_state(message: Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state:
         await state.clear()
-        await message.answer("❌ Операция отменена")
+        # ReplyKeyboardRemove — чтобы reply-клавиатура (например, выбор пользователя) не осталась висеть
+        await message.answer("❌ Операция отменена", reply_markup=ReplyKeyboardRemove())
     else:
         await message.answer("ℹ️ Нет активных операций для отмены")
 
 
 @router.message(Command("admin"))
-async def admin_command(message: Message, bot: Bot):
+async def admin_command(message: Message, bot: Bot, is_admin: bool = False):
     """Обработчик команды /admin"""
-    if not is_admin(message.from_user.id):
+    if not is_admin:
         await message.answer("❌ У вас нет прав администратора")
         return
 
-    # Получаем статистику бота
+    await message.answer(text=await admin_panel_text(), reply_markup=AdminKeyboards.main_admin_menu())
+
+
+async def admin_panel_text() -> str:
+    """Текст главного экрана админки со статистикой (используется и для возврата «Назад»)"""
     stats = await db.get_bot_stats()
     if not stats:
-        # Если статистики нет, создаем её
         stats = await db.update_bot_stats()
 
-    # Получаем актуальные данные
     total_users = await db.get_users_count()
     active_users = await db.get_active_users_count()
-
-    # Форматируем время последнего запуска
     last_restart = stats.last_restart.strftime("%d.%m.%Y %H:%M:%S")
 
-    # Формируем сообщение со статистикой
-    text = f"""
+    return f"""
 🔧 <b>Админская панель</b>
 
 📊 <b>Статистика бота:</b>
@@ -73,16 +71,11 @@ async def admin_command(message: Message, bot: Bot):
 Выберите действие:
 """
 
-    await message.answer(
-        text=text,
-        reply_markup=AdminKeyboards.main_admin_menu()
-    )
-
 
 @router.callback_query(F.data == "admin_broadcast")
-async def start_broadcast(callback: CallbackQuery, state: FSMContext):
+async def start_broadcast(callback: CallbackQuery, state: FSMContext, is_admin: bool = False):
     """Начало создания рассылки"""
-    if not is_admin(callback.from_user.id):
+    if not is_admin:
         await callback.answer("❌ У вас нет прав администратора")
         return
 
@@ -99,9 +92,9 @@ async def start_broadcast(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(StateFilter(AdminStates.broadcast_message))
-async def receive_broadcast_message(message: Message, state: FSMContext):
+async def receive_broadcast_message(message: Message, state: FSMContext, is_admin: bool = False):
     """Получение сообщения для рассылки"""
-    if not is_admin(message.from_user.id):
+    if not is_admin:
         await state.clear()
         return
 
@@ -137,9 +130,9 @@ async def add_button_to_broadcast(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(StateFilter(AdminStates.broadcast_button))
-async def receive_broadcast_button(message: Message, state: FSMContext):
+async def receive_broadcast_button(message: Message, state: FSMContext, is_admin: bool = False):
     """Получение кнопки для рассылки"""
-    if not is_admin(message.from_user.id):
+    if not is_admin:
         await state.clear()
         return
 
@@ -205,9 +198,9 @@ async def broadcast_without_button(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "broadcast_confirm_yes")
-async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot):
+async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot, is_admin: bool = False):
     """Подтверждение и запуск рассылки"""
-    if not is_admin(callback.from_user.id):
+    if not is_admin:
         await callback.answer("❌ У вас нет прав администратора")
         return
 

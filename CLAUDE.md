@@ -20,7 +20,7 @@ every common task, and the rules about secrets. This file only lists what is Cla
 
 ```bash
 just venv                      # one-time: .venv with dev deps
-just init <name> <admin_id>    # non-interactive project setup
+just init <name> <@username|id> # non-interactive setup; ask for the username, the bot resolves the ID
 just set-token                 # safe token entry (human-only step)
 just doctor [--json]           # environment check
 just check                     # lint + tests + secrets

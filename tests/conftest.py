@@ -37,10 +37,29 @@ class FakeDb:
 
     async def add_user(self, user_id: int, username=None, first_name=None, last_name=None) -> User:
         self.calls.append(("add_user", {"user_id": user_id, "username": username}))
-        user = self.users.get(user_id) or User(id=user_id)
+        user = self.users.get(user_id) or User(id=user_id, is_admin=False, admin_username=None)
         user.username, user.first_name, user.last_name, user.is_active = username, first_name, last_name, True
         self.users[user_id] = user
         return user
+
+    async def set_admin(self, user_id: int, claimed_username: Optional[str] = None) -> None:
+        user = self.users.get(user_id)
+        if user:
+            user.is_admin = True
+            if claimed_username:
+                user.admin_username = claimed_username.lower().lstrip("@")
+
+    async def remove_admin(self, user_id: int) -> None:
+        user = self.users.get(user_id)
+        if user:
+            user.is_admin, user.admin_username = False, None
+
+    async def get_admins(self) -> List[User]:
+        return sorted((u for u in self.users.values() if u.is_admin), key=lambda u: u.id)
+
+    async def get_admin_by_username(self, username: str) -> Optional[User]:
+        wanted = username.lower().lstrip("@")
+        return next((u for u in self.users.values() if u.is_admin and u.admin_username == wanted), None)
 
     async def get_user(self, user_id: int) -> Optional[User]:
         return self.users.get(user_id)
@@ -71,7 +90,8 @@ def fake_db(monkeypatch) -> FakeDb:
     """Подменяет методы синглтона `db` на заглушку в памяти."""
     fake = FakeDb()
     for name in ("add_user", "get_user", "get_all_users", "get_active_users",
-                 "get_users_count", "get_active_users_count", "get_bot_stats", "update_bot_stats"):
+                 "get_users_count", "get_active_users_count", "get_bot_stats", "update_bot_stats",
+                 "set_admin", "get_admin_by_username", "remove_admin", "get_admins"):
         monkeypatch.setattr(db, name, getattr(fake, name))
     return fake
 

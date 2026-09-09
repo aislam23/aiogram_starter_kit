@@ -371,9 +371,9 @@ validate-prod:
 
     print('✅ Production environment looks good!')
 
-# 🚀 Initialize new project (non-interactive; usage: just init name admin_id ["description"])
-init name admin_id description="Telegram бот на Aiogram": check-python
-    {{python}} scripts/init_project.py --name "{{name}}" --admin-id "{{admin_id}}" --description "{{description}}"
+# 🚀 Initialize new project (non-interactive; usage: just init name <telegram_id|@username> ["description"])
+init name admin description="Telegram бот на Aiogram": check-python
+    {{python}} scripts/init_project.py --name "{{name}}" --admin "{{admin}}" --description "{{description}}"
 
 # 🧙 Interactive setup wizard in the terminal (as before; for humans, not agents)
 init-project:

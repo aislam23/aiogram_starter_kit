@@ -83,6 +83,40 @@ class Database:
             await session.refresh(user)
             return user
 
+    async def set_admin(self, user_id: int, claimed_username: Optional[str] = None) -> None:
+        """Выдать права администратора и запомнить username, по которому они выданы"""
+        async with self.session_maker() as session:
+            user = await session.get(User, user_id)
+            if not user:
+                return
+            user.is_admin = True
+            if claimed_username:
+                user.admin_username = claimed_username.lower().lstrip("@")
+            await session.commit()
+
+    async def remove_admin(self, user_id: int) -> None:
+        """Снять права администратора, выданные через бота или по username"""
+        async with self.session_maker() as session:
+            user = await session.get(User, user_id)
+            if user:
+                user.is_admin = False
+                user.admin_username = None
+                await session.commit()
+
+    async def get_admins(self) -> List[User]:
+        """Администраторы, отмеченные в базе (без тех, кто задан только в ADMIN_USER_IDS)"""
+        async with self.session_maker() as session:
+            result = await session.execute(select(User).where(User.is_admin.is_(True)).order_by(User.id))
+            return result.scalars().all()
+
+    async def get_admin_by_username(self, username: str) -> Optional[User]:
+        """Кто уже получил права по этому username (если кто-то получил)"""
+        async with self.session_maker() as session:
+            result = await session.execute(
+                select(User).where(User.is_admin.is_(True), User.admin_username == username.lower().lstrip("@"))
+            )
+            return result.scalars().first()
+
     async def get_user(self, user_id: int) -> Optional[User]:
         """Получение пользователя по ID"""
         async with self.session_maker() as session:

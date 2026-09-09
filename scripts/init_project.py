@@ -3,9 +3,10 @@
 Инициализация нового проекта из шаблона. Без диалогов, идемпотентно, без git-операций.
 
 Usage:
-    python scripts/init_project.py --name my_bot --admin-id 123456789
-    python scripts/init_project.py --name my_bot --admin-id 123456789 --description "Бот для заметок" --author "Имя"
-    python scripts/init_project.py --name my_bot --admin-id 123 --postgres-port 5433 --json
+    python scripts/init_project.py --name my_bot --admin @artem        # админ по username (ID узнает бот)
+    python scripts/init_project.py --name my_bot --admin 123456789     # или по Telegram ID
+    python scripts/init_project.py --name my_bot --admin @artem --description "Бот для заметок" --author "Имя"
+    python scripts/init_project.py --name my_bot --admin @artem --postgres-port 5433 --json
 
 Что делает:
 - создаёт .env и .env.prod из примеров, генерирует пароли (существующие значения не трогает);
@@ -36,10 +37,25 @@ CONTAINER_PREFIX = "aiogram"
 TOKEN_PLACEHOLDERS = {"", "your_bot_token_here", "your_production_bot_token_here"}
 
 
+USERNAME_RE = re.compile(r"^[a-z][a-z0-9_]{3,31}$")
+
+
+def parse_admin(raw: str) -> tuple[Optional[int], Optional[str]]:
+    """'123456' → (123456, None); '@Artem' / 'https://t.me/Artem' → (None, 'artem')."""
+    value = raw.strip()
+    if value.isdigit():
+        return int(value), None
+    value = re.sub(r"^(https?://)?(t\.me|telegram\.me)/", "", value, flags=re.IGNORECASE).lstrip("@").lower()
+    if USERNAME_RE.match(value):
+        return None, value
+    raise ValueError(f"'{raw}' не похоже ни на Telegram ID, ни на username")
+
+
 @dataclass
 class ProjectConfig:
     name: str
-    admin_id: int
+    admin_id: Optional[int] = None
+    admin_username: Optional[str] = None
     description: str = "Telegram бот на Aiogram"
     author: str = "Your Name"
     db_name: Optional[str] = None
@@ -48,6 +64,10 @@ class ProjectConfig:
     pgadmin_port: Optional[int] = None
 
     def __post_init__(self) -> None:
+        if not self.admin_id and not self.admin_username:
+            raise ValueError("Нужен admin_id или admin_username")
+        if self.admin_username:
+            self.admin_username = parse_admin(self.admin_username)[1]
         self.name = slugify(self.name)
         self.db_name = self.db_name or f"{self.name}_db"
         self.db_user = self.db_user or f"{self.name}_user"
@@ -146,8 +166,11 @@ def apply(root: Path, cfg: ProjectConfig) -> Dict[str, List[str]]:
     changed: List[str] = []
 
     # .env (разработка)
+    admin_ids = f"[{cfg.admin_id}]" if cfg.admin_id else "[]"
+    admin_usernames = json.dumps([cfg.admin_username]) if cfg.admin_username else "[]"
     dev_values = {
-        "ADMIN_USER_IDS": f"[{cfg.admin_id}]",
+        "ADMIN_USER_IDS": admin_ids,
+        "ADMIN_USERNAMES": admin_usernames,
         "POSTGRES_DB": cfg.db_name,
         "POSTGRES_USER": cfg.db_user,
         "POSTGRES_PASSWORD": generate_password(24),
@@ -160,7 +183,8 @@ def apply(root: Path, cfg: ProjectConfig) -> Dict[str, List[str]]:
     # .env.prod — токен берём из .env, если он там уже есть
     dev_env = parse_env((root / ".env").read_text(encoding="utf-8"))
     prod_values = {
-        "ADMIN_USER_IDS": f"[{cfg.admin_id}]",
+        "ADMIN_USER_IDS": admin_ids,
+        "ADMIN_USERNAMES": admin_usernames,
         "POSTGRES_DB": f"{cfg.db_name}_prod",
         "POSTGRES_USER": f"{cfg.db_user}_prod",
         "POSTGRES_PASSWORD": generate_password(32),
@@ -235,7 +259,8 @@ def _ask(prompt: str, default: str = "") -> str:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Инициализация проекта из шаблона (без диалогов)")
     p.add_argument("--name", help="имя проекта: [a-z0-9_], используется для Docker и БД")
-    p.add_argument("--admin-id", type=int, help="Telegram ID администратора")
+    p.add_argument("--admin", help="администратор: Telegram ID или @username (бот сам узнает ID при первом сообщении)")
+    p.add_argument("--admin-id", type=int, help="Telegram ID администратора (то же, что --admin <id>)")
     p.add_argument("--description", default="Telegram бот на Aiogram")
     p.add_argument("--author", default="Your Name")
     p.add_argument("--db-name")
@@ -255,20 +280,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"❌ {root} не похож на корень aiogram_starter_kit (нет docker-compose.yml / .env.example)", file=sys.stderr)
         return 2
 
-    name, admin_id = args.name, args.admin_id
-    if (not name or not admin_id) and sys.stdin.isatty() and not args.json:
+    name = args.name
+    admin_id, admin_username = args.admin_id, None
+    if args.admin:
+        try:
+            admin_id, admin_username = parse_admin(args.admin)
+        except ValueError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            return 2
+    if (not name or not (admin_id or admin_username)) and sys.stdin.isatty() and not args.json:
         print("🚀 Настройка нового проекта (значения видны при вводе — это нормально, здесь нет секретов)\n")
         name = name or _ask("Имя проекта (латиница, без пробелов)", "my_telegram_bot")
-        while not admin_id:
-            raw = _ask("Ваш Telegram ID (узнать: @userinfobot)")
-            admin_id = int(raw) if raw.isdigit() else None
-    if not name or not admin_id:
-        print("❌ Нужны аргументы --name и --admin-id.\n"
-              "   Пример: python scripts/init_project.py --name my_bot --admin-id 123456789", file=sys.stderr)
+        while not (admin_id or admin_username):
+            try:
+                admin_id, admin_username = parse_admin(_ask("Ваш username в Telegram (например @artem) или ID"))
+            except ValueError as e:
+                print(f"   {e}")
+    if not name or not (admin_id or admin_username):
+        print("❌ Нужны аргументы --name и --admin.\n"
+              "   Пример: python scripts/init_project.py --name my_bot --admin @artem", file=sys.stderr)
         return 2
 
     cfg = ProjectConfig(
-        name=name, admin_id=admin_id, description=args.description, author=args.author,
+        name=name, admin_id=admin_id, admin_username=admin_username,
+        description=args.description, author=args.author,
         db_name=args.db_name, db_user=args.db_user,
         postgres_port=args.postgres_port, pgadmin_port=args.pgadmin_port,
     )

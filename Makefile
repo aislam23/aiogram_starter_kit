@@ -271,8 +271,8 @@ validate-prod: ## Validate production environment file
 init-project: ## 🧙 Interactive setup wizard in the terminal (as before; for humans)
 	@./scripts/init-project.sh
 
-init: _check-python ## 🚀 Non-interactive setup for agents (usage: make init NAME=my_bot ADMIN_ID=123)
-	@$(PYTHON) scripts/init_project.py $(if $(NAME),--name "$(NAME)") $(if $(ADMIN_ID),--admin-id "$(ADMIN_ID)") $(if $(DESC),--description "$(DESC)")
+init: _check-python ## 🚀 Non-interactive setup for agents (usage: make init NAME=my_bot ADMIN=@username or ADMIN=123456)
+	@$(PYTHON) scripts/init_project.py $(if $(NAME),--name "$(NAME)") $(if $(ADMIN),--admin "$(ADMIN)") $(if $(ADMIN_ID),--admin-id "$(ADMIN_ID)") $(if $(DESC),--description "$(DESC)")
 
 set-token: _check-python ## 🔑 Safely store BOT_TOKEN (clipboard → browser page; never via chat)
 	@$(PYTHON) scripts/set_token.py

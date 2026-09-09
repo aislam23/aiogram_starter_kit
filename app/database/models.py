@@ -24,6 +24,10 @@ class User(Base):
     first_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     last_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Админ, распознанный по username (ADMIN_USERNAMES). admin_username — под каким именем
+    # права были выданы; не меняется при смене username, чтобы чужой не занял старое имя.
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    admin_username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

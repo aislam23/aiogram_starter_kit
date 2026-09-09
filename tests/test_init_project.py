@@ -132,3 +132,46 @@ def test_main_json_reports_changed_files_and_next_steps(project, capsys):
     assert report["ok"] is True
     assert ".env" in report["written"]
     assert any("set-token" in step for step in report["next_steps"])
+
+
+# ── админ по username ────────────────────────────────────────────
+
+@pytest.mark.parametrize("raw,expected", [
+    ("123456789", (123456789, None)),
+    ("@artem", (None, "artem")),
+    ("Artem", (None, "artem")),
+    ("https://t.me/artem", (None, "artem")),
+    ("t.me/Artem_1", (None, "artem_1")),
+])
+def test_parse_admin_detects_id_or_username(raw, expected):
+    assert init_project.parse_admin(raw) == expected
+
+
+def test_parse_admin_rejects_garbage():
+    with pytest.raises(ValueError):
+        init_project.parse_admin("ar tem!")
+
+
+def test_apply_writes_admin_username_when_given(project):
+    init_project.apply(project, init_project.ProjectConfig(name="my_bot", admin_username="Artem"))
+
+    env = _env(project / ".env")
+    assert env["ADMIN_USER_IDS"] == "[]"
+    assert env["ADMIN_USERNAMES"] == '["artem"]'
+    assert _env(project / ".env.prod")["ADMIN_USERNAMES"] == '["artem"]'
+
+
+def test_main_accepts_admin_username_via_admin_flag(project, capsys):
+    code = init_project.main(["--root", str(project), "--name", "my_bot", "--admin", "@artem", "--json"])
+    assert code == 0
+    assert _env(project / ".env")["ADMIN_USERNAMES"] == '["artem"]'
+
+
+def test_main_accepts_admin_id_via_admin_flag(project):
+    assert init_project.main(["--root", str(project), "--name", "my_bot", "--admin", "42", "--json"]) == 0
+    assert _env(project / ".env")["ADMIN_USER_IDS"] == "[42]"
+
+
+def test_project_config_requires_id_or_username():
+    with pytest.raises(ValueError):
+        init_project.ProjectConfig(name="my_bot")

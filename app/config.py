@@ -2,9 +2,15 @@
 Конфигурация приложения
 """
 import json
+from typing import Optional
 
 from pydantic import Field, validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def normalize_username(value: Optional[str]) -> str:
+    """'@Artem ' → 'artem'"""
+    return (value or "").strip().lstrip("@").lower()
 
 
 class Settings(BaseSettings):
@@ -16,6 +22,8 @@ class Settings(BaseSettings):
 
     # Admin settings
     admin_user_ids: str = Field("[]", alias="ADMIN_USER_IDS")
+    # Админы по username: бот запомнит их ID при первом сообщении (см. app/middlewares/user.py)
+    admin_usernames: str = Field("[]", alias="ADMIN_USERNAMES")
 
     # Database settings
     postgres_host: str = Field("localhost", alias="POSTGRES_HOST")
@@ -71,6 +79,22 @@ class Settings(BaseSettings):
                 # Если не получается, пробуем как строку через запятую
                 return [int(x.strip()) for x in v.split(',') if x.strip()]
         return v
+
+    @validator('admin_usernames')
+    def parse_admin_usernames(cls, v):
+        """Парсим список username админов: JSON-массив или через запятую, без @, в нижнем регистре"""
+        if not isinstance(v, str):
+            return v
+        try:
+            parsed = json.loads(v)
+            items = parsed if isinstance(parsed, list) else [str(parsed)]
+        except (json.JSONDecodeError, ValueError):
+            items = v.split(',')
+        return [normalize_username(x) for x in items if normalize_username(x)]
+
+    def is_admin_username(self, username: Optional[str]) -> bool:
+        """Есть ли username в списке админов (регистр и @ не важны)"""
+        return bool(username) and normalize_username(username) in self.admin_usernames
 
     @property
     def database_url(self) -> str:

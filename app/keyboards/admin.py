@@ -1,7 +1,15 @@
 """
 Клавиатуры для админской части
 """
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from typing import Iterable
+
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    KeyboardButtonRequestUsers,
+    ReplyKeyboardMarkup,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
@@ -19,12 +27,56 @@ class AdminKeyboards:
         ))
 
         builder.add(InlineKeyboardButton(
+            text="👥 Администраторы",
+            callback_data="admin_manage"
+        ))
+
+        builder.add(InlineKeyboardButton(
             text="⚙️ Настройки API",
             callback_data="admin_api_settings"
         ))
 
         builder.adjust(1)
         return builder.as_markup()
+
+    PICK_ADMIN_REQUEST_ID = 1
+    CANCEL_PICK_TEXT = "❌ Отмена"
+
+    @staticmethod
+    def admins_list(removable_ids: Iterable[int]) -> InlineKeyboardMarkup:
+        """Экран «Администраторы»: снять права (только у тех, кого можно), добавить, назад"""
+        builder = InlineKeyboardBuilder()
+        for user_id in removable_ids:
+            builder.button(text=f"➖ Снять {user_id}", callback_data=f"admins:remove:{user_id}")
+        builder.button(text="➕ Добавить администратора", callback_data="admins:add")
+        builder.button(text="⬅️ Назад", callback_data="admins:back")
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @classmethod
+    def pick_user_keyboard(cls) -> ReplyKeyboardMarkup:
+        """Reply-клавиатура с нативным выбором пользователя (request_users).
+
+        Inline-кнопки так не умеют: выбор контакта открывает только KeyboardButton.
+        Клиент Telegram покажет список чатов/контактов и пришлёт боту users_shared с ID выбранного.
+        """
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(
+                    text="👤 Выбрать пользователя",
+                    request_users=KeyboardButtonRequestUsers(
+                        request_id=cls.PICK_ADMIN_REQUEST_ID,
+                        user_is_bot=False,
+                        max_quantity=1,
+                        request_name=True,
+                        request_username=True,
+                    ),
+                )],
+                [KeyboardButton(text=cls.CANCEL_PICK_TEXT)],
+            ],
+            resize_keyboard=True,
+            one_time_keyboard=True,
+        )
 
     @staticmethod
     def broadcast_confirm(message_count: int) -> InlineKeyboardMarkup:

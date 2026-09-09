@@ -93,7 +93,7 @@ def check_compose(runner: Runner = default_runner) -> Check:
 def check_env_file(path: Path) -> Check:
     if path.exists():
         return Check(path.name, True, "найден")
-    return Check(path.name, False, "нет файла — запустите: python scripts/init_project.py --name <имя> --admin-id <id>")
+    return Check(path.name, False, "нет файла — запустите: just init <имя> <telegram_id|@username>")
 
 
 def check_token(env: Dict[str, str]) -> Check:
@@ -121,11 +121,16 @@ def check_token_online(env: Dict[str, str]) -> Check:
 
 
 def check_admins(env: Dict[str, str]) -> Check:
-    raw = env.get("ADMIN_USER_IDS", "").strip()
-    ids = [x for x in re.findall(r"\d+", raw)]
-    if not ids:
-        return Check("ADMIN_USER_IDS", False, "нет ни одного ID администратора")
-    return Check("ADMIN_USER_IDS", True, f"{len(ids)} админ(ов)")
+    ids = re.findall(r"\d+", env.get("ADMIN_USER_IDS", ""))
+    usernames = re.findall(r"[A-Za-z][A-Za-z0-9_]{3,}", env.get("ADMIN_USERNAMES", ""))
+    if not ids and not usernames:
+        return Check("Админы", False, "не заданы ни ADMIN_USER_IDS, ни ADMIN_USERNAMES — запустите: just init <имя> @username")
+    parts = []
+    if ids:
+        parts.append(f"{len(ids)} по ID")
+    if usernames:
+        parts.append(f"{len(usernames)} по username (ID определится при первом сообщении)")
+    return Check("Админы", True, ", ".join(parts))
 
 
 def check_logs_dir(root: Path) -> Check:

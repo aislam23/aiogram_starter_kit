@@ -23,9 +23,9 @@
 | Настройки | `app/config.py` → `settings` | Pydantic Settings из `.env`; `settings.is_admin(id)` |
 | Хендлеры | `app/handlers/` | Один файл = один `Router`; регистрация в `app/handlers/__init__.py` |
 | Примеры | `app/handlers/examples/` | FSM-анкета `/survey`, пагинация `/items`. Включаются `EXAMPLE_HANDLERS=true` |
-| Админка | `app/handlers/admin/` | `/admin`, рассылки, настройки API |
-| Фильтры | `app/filters/` | `IsAdmin()` — используй в декораторе, а не проверкой внутри хендлера |
-| Middleware | `app/middlewares/` | Логирование и автосохранение пользователей (outer, на каждый апдейт) |
+| Админка | `app/handlers/admin/` | `/admin`, управление админами (`admins.py`), рассылки, настройки API |
+| Фильтры | `app/filters/` | `IsAdmin()` в декораторе; внутри хендлера доступен аргумент `is_admin: bool` из middleware |
+| Middleware | `app/middlewares/` | Логирование, автосохранение пользователей, распознавание админов по username (outer) |
 | FSM | `app/states/` | `StatesGroup` для многошаговых сценариев; хранилище — Redis |
 | Клавиатуры | `app/keyboards/` | Inline-клавиатуры через `InlineKeyboardBuilder` |
 | Сервисы | `app/services/` | Логика, не зависящая от aiogram (рассылка и т.п.) |
@@ -42,7 +42,7 @@
 ```bash
 git clone <шаблон> my_bot && cd my_bot
 just venv                                    # локальное окружение для проверок (один раз)
-just init my_bot 123456789 "Бот для заметок" # .env, .env.prod, имена контейнеров; без диалогов
+just init my_bot @artem "Бот для заметок"    # админ: @username или Telegram ID; без диалогов
 just set-token                               # ← человек вставляет токен сам, агент видит только «@bot подключён»
 just doctor                                  # Docker, .env, токен, админы
 just check                                   # линтер + тесты + секреты
@@ -60,8 +60,11 @@ just logs-json 30                            # убедиться, что бот
 Не запускай `make init-project` / `just init-project` / `scripts/init-project.sh`: это мастер для людей, он ждёт ввода
 в терминале, включая токен, и может переименовать папку проекта. Для агента только `just init` + `just set-token`.
 
-`just init` не спрашивает ничего: имя проекта и Telegram ID — не секреты, их можно спросить в чате.
-Telegram ID человек узнаёт у @userinfobot.
+`just init` не спрашивает ничего: имя проекта и username — не секреты, их можно спросить в чате.
+**Спрашивай у человека username** (он его знает), а не Telegram ID (его почти никто не знает).
+Бот сам узнает ID, когда этот человек первый раз ему напишет, и запомнит его в базе как администратора
+(`ADMIN_USERNAMES` в `.env`, механика в `app/middlewares/user.py`). Если человек знает ID — можно и ID.
+После запуска попроси его отправить боту `/start`, затем `/admin`.
 
 Как понять, что бот работает, не заглядывая в Telegram: в `logs/bot.jsonl` появится запись
 `Bot @имя started successfully`, а после `/start` от пользователя — запись `Message from <id>`.
@@ -160,17 +163,32 @@ async def test_button(harness, user):
 ### 4.8 Кнопка в админке
 
 1. Кнопка в `app/keyboards/admin.py` (`AdminKeyboards.main_admin_menu`), `callback_data="admin_<action>"`.
-2. Хендлер в `app/handlers/admin/admin.py` с фильтром `IsAdmin()` в декораторе.
+2. Хендлер в `app/handlers/admin/admin.py` с фильтром `IsAdmin()` в декораторе. Если нужно ответить
+   «нет прав» вместо тихого игнорирования — прими аргумент `is_admin: bool` и проверь его в теле.
 3. Тест с фикстурой `admin` (ID 777 в тестах задаётся через `ADMIN_USER_IDS` в `tests/conftest.py`).
 
-### 4.9 Внешний HTTP API
+### 4.9 Нативный выбор пользователя или чата (request_users / request_chat)
+
+Образец: `app/handlers/admin/admins.py` + `AdminKeyboards.pick_user_keyboard`.
+
+- Открыть системный список контактов может только reply-кнопка `KeyboardButton(request_users=...)`,
+  inline-кнопки этого не умеют. Поэтому: inline-меню → reply-клавиатура с одной кнопкой выбора и «Отмена».
+- Ответ приходит как `message.users_shared` (`F.users_shared`), внутри `users[].user_id`,
+  а `first_name/username` — только если запросили `request_name=True` / `request_username=True`.
+- Держи выбор в FSM-состоянии и убирай клавиатуру `ReplyKeyboardRemove()` на **каждом** выходе из него:
+  успех, кнопка «Отмена», `/cancel` и любое другое сообщение (fallback-хендлер `StateFilter(...)` без
+  прочих условий, объявленный последним). Иначе reply-клавиатура останется висеть в чате навсегда.
+  Общее правило шаблона: reply-клавиатура живёт только внутри состояния и умирает вместе с ним.
+- Для выбора группы/канала аналогично `KeyboardButtonRequestChat` и `F.chat_shared`.
+
+### 4.10 Внешний HTTP API
 
 `aiohttp` уже в зависимостях (через aiogram). Клиент — в `app/services/`, ключ API — в `.env` через
 новое поле в `app/config.py` (`Field("", alias="MY_API_KEY")`), в `.env.example` — пустое значение.
 Ключ пользователь кладёт сам: скажи ему открыть `.env` в редакторе или используй `just set-token`
 как образец для своего скрипта. **Не проси ключ в чат.**
 
-### 4.10 Планировщик / фоновые задачи
+### 4.11 Планировщик / фоновые задачи
 
 Запускай через `asyncio.create_task` в `on_startup` (`app/main.py`) или добавь `apscheduler`
 в `requirements.txt`. Не блокируй event loop.

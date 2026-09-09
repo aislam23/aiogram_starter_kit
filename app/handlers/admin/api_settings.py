@@ -40,9 +40,9 @@ async def check_local_api_status() -> dict:
 
 
 @router.callback_query(F.data == "admin_api_settings")
-async def api_settings_handler(callback: CallbackQuery):
+async def api_settings_handler(callback: CallbackQuery, is_admin: bool = False):
     """Показать настройки API"""
-    if not settings.is_admin(callback.from_user.id):
+    if not is_admin:
         await callback.answer("Нет прав")
         return
 
@@ -69,9 +69,9 @@ async def api_settings_handler(callback: CallbackQuery):
 
 
 @router.callback_query(F.data == "api_check_status")
-async def check_api_status_handler(callback: CallbackQuery):
+async def check_api_status_handler(callback: CallbackQuery, is_admin: bool = False):
     """Проверка статуса Local API Server"""
-    if not settings.is_admin(callback.from_user.id):
+    if not is_admin:
         await callback.answer("Нет прав")
         return
 
@@ -109,9 +109,9 @@ URL: <code>{settings.local_api_url}</code>
 
 
 @router.callback_query(F.data == "api_switch_mode")
-async def switch_api_mode_handler(callback: CallbackQuery):
+async def switch_api_mode_handler(callback: CallbackQuery, is_admin: bool = False):
     """Инструкция по переключению режима"""
-    if not settings.is_admin(callback.from_user.id):
+    if not is_admin:
         await callback.answer("Нет прав")
         return
 
@@ -143,9 +143,9 @@ TELEGRAM_API_HASH
 
 
 @router.callback_query(F.data == "api_back")
-async def api_back_handler(callback: CallbackQuery):
+async def api_back_handler(callback: CallbackQuery, is_admin: bool = False):
     """Возврат в главное меню"""
-    if not settings.is_admin(callback.from_user.id):
+    if not is_admin:
         await callback.answer("Нет прав")
         return
 

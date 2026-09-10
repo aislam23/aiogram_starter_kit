@@ -46,6 +46,23 @@ def run_command(cmd: list[str], check: bool = True) -> subprocess.CompletedProce
     return subprocess.run(cmd, check=check)
 
 
+def _probe(cmd: list[str]) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        return proc.returncode, proc.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return 127, str(e)
+
+
+def detect_compose(runner=_probe) -> list[str] | None:
+    """Docker Compose v2 (`docker compose`) предпочтительнее, v1 (`docker-compose`) — запасной вариант."""
+    if runner(['docker', 'compose', 'version'])[0] == 0:
+        return ['docker', 'compose']
+    if runner(['docker-compose', '--version'])[0] == 0:
+        return ['docker-compose']
+    return None
+
+
 def main() -> int:
     # Determine CI mode
     ci_mode = (
@@ -55,7 +72,11 @@ def main() -> int:
     )
 
     c = Colors(enabled=not ci_mode)
-    docker_compose = ['docker-compose', '-f', 'docker-compose.prod.yml']
+    compose = detect_compose()
+    if compose is None:
+        log_error("Ошибка: Docker Compose не найден (ни `docker compose`, ни `docker-compose`)", c)
+        return 1
+    docker_compose = compose + ['-f', 'docker-compose.prod.yml']
 
     log_info("=== Начало деплоя продакшена ===", c)
 

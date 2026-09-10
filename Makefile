@@ -79,7 +79,7 @@ _check-git:
 
 # ═════════════════════════════════════════════════════════════════
 
-.PHONY: help build up down logs restart clean dev prod shell db-shell redis-shell test test-docker init-project init set-token doctor check-secrets venv lint check setup-remote-repo dev-local dev-local-logs stop-local api-status api-logs api-restart ci-deploy ci-health ci-logs
+.PHONY: help build up down logs restart clean dev prod shell db-shell redis-shell test test-docker init-project init set-token doctor rent-server set-server deploy server-logs server-status deploy-github check-secrets venv lint check setup-remote-repo dev-local dev-local-logs stop-local api-status api-logs api-restart ci-deploy ci-health ci-logs
 
 help: ## Show this help message
 	@echo "$(BLUE)Available commands:$(NC)"
@@ -277,8 +277,26 @@ init: _check-python ## 🚀 Non-interactive setup for agents (usage: make init N
 set-token: _check-python ## 🔑 Safely store BOT_TOKEN (clipboard → browser page; never via chat)
 	@$(PYTHON) scripts/set_token.py
 
-doctor: _check-python ## 🩺 Check environment (Docker, .env, token, admins)
+doctor: _check-python ## 🩺 Check environment (Docker, .env, token, admins, server)
 	@$(PYTHON) scripts/doctor.py
+
+rent-server: _check-python ## 🖥 Where to rent a server (usage: make rent-server [P=vdska])
+	@$(PYTHON) scripts/providers.py $(P)
+
+set-server: _check-python ## 🔐 Safely connect a server (browser page; password used once to install SSH key)
+	@$(VENV_PYTHON) scripts/set_server.py
+
+deploy: _check-python ## 🚀 Deploy the bot to the server over SSH
+	@$(VENV_PYTHON) scripts/remote_deploy.py deploy
+
+server-logs: _check-python ## 📜 Bot logs from the server (usage: make server-logs N=50)
+	@$(VENV_PYTHON) scripts/remote_deploy.py logs $(or $(N),50)
+
+server-status: _check-python ## 📊 Container status on the server
+	@$(VENV_PYTHON) scripts/remote_deploy.py status
+
+deploy-github: _check-python ## ☁️ Publish deploy secrets to GitHub Actions via gh CLI
+	@$(VENV_PYTHON) scripts/github_secrets.py
 
 check-secrets: _check-python ## 🔍 Scan tracked files for leaked secrets
 	@$(PYTHON) scripts/check_secrets.py

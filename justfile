@@ -383,7 +383,31 @@ init-project:
 set-token: check-python
     {{python}} scripts/set_token.py
 
-# 🩺 Check environment: Docker, .env, token, admins (add --json for machine-readable output)
+# 🖥 Where to rent a server: list providers, or open one in the browser (usage: just rent-server [vdska])
+rent-server *args: check-python
+    @{{python}} scripts/providers.py {{args}}
+
+# 🔐 Safely connect a server: local browser page for IP + password/key. Password is used once to install our SSH key.
+set-server *args: check-python
+    @{{venv_python}} scripts/set_server.py {{args}}
+
+# 🚀 Deploy the bot to the server over SSH (Docker install, upload, docker compose up)
+deploy: check-python
+    @{{venv_python}} scripts/remote_deploy.py deploy
+
+# 📜 Show last N lines of bot logs from the server (usage: just server-logs 50)
+server-logs n="50": check-python
+    @{{venv_python}} scripts/remote_deploy.py logs {{n}}
+
+# 📊 Show container status on the server
+server-status: check-python
+    @{{venv_python}} scripts/remote_deploy.py status
+
+# ☁️ Publish deploy secrets to GitHub Actions via gh CLI (then every push to main deploys)
+deploy-github: check-python
+    @{{venv_python}} scripts/github_secrets.py
+
+# 🩺 Check environment: Docker, .env, token, admins, server (add --json for machine-readable output)
 doctor *args: check-python
     {{python}} scripts/doctor.py {{args}}
 

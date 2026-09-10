@@ -21,6 +21,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 TOKEN_RE = re.compile(r"^\d{6,12}:[A-Za-z0-9_-]{30,60}$")
 TOKEN_PLACEHOLDERS = {"", "your_bot_token_here", "your_production_bot_token_here"}
 
@@ -133,6 +135,20 @@ def check_admins(env: Dict[str, str]) -> Check:
     return Check("Админы", True, ", ".join(parts))
 
 
+def check_server(root: Path) -> Check:
+    """Настроен ли сервер для деплоя (.deploy/server.json + ключ). Необязательно для локального запуска."""
+    try:
+        import server_config as sc
+    except ImportError:
+        return Check("Сервер", False, "модуль server_config не найден", required=False)
+    cfg = sc.load(root)
+    if cfg is None:
+        return Check("Сервер", False, "не настроен — для деплоя выполните: just set-server", required=False)
+    if not cfg.key_path(root).exists():
+        return Check("Сервер", False, f"{cfg.describe()}: нет ключа .deploy/{cfg.key_file} — выполните: just set-server", required=False)
+    return Check("Сервер", True, f"{cfg.describe()} (вход по ключу) — деплой: just deploy", required=False)
+
+
 def check_logs_dir(root: Path) -> Check:
     path = root / "logs"
     return Check("logs/", True, "есть" if path.exists() else "создастся при запуске", required=False)
@@ -154,6 +170,7 @@ def run_all(root: Path, online: bool = True, runner: Runner = default_runner) ->
     if online and env:
         checks.append(check_token_online(env))
     checks.append(check_admins(env))
+    checks.append(check_server(root))
     checks.append(check_logs_dir(root))
 
     ok = all(c.ok for c in checks if c.required)

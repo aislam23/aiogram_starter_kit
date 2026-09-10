@@ -79,3 +79,28 @@ def test_check_admins_accepts_usernames():
     assert doctor.check_admins({"ADMIN_USER_IDS": "[]", "ADMIN_USERNAMES": '["artem"]'}).ok
     assert doctor.check_admins({"ADMIN_USERNAMES": "@artem"}).ok
     assert not doctor.check_admins({"ADMIN_USER_IDS": "[]", "ADMIN_USERNAMES": "[]"}).ok
+
+
+# ── сервер ───────────────────────────────────────────────────────
+
+def test_check_server_not_configured(tmp_path):
+    result = doctor.check_server(tmp_path)
+    assert not result.ok and not result.required
+    assert "set-server" in result.detail
+
+
+def test_check_server_configured_is_masked(tmp_path):
+    import server_config as sc
+    cfg = sc.ServerConfig("123.45.67.89", 22, "root", "deploy_key", "/root/x")
+    sc.save(tmp_path, cfg)
+    (tmp_path / ".deploy" / "deploy_key").write_text("k")
+    result = doctor.check_server(tmp_path)
+    assert result.ok
+    assert "root@123.45.•.•" in result.detail and "67.89" not in result.detail
+
+
+def test_check_server_reports_missing_key(tmp_path):
+    import server_config as sc
+    sc.save(tmp_path, sc.ServerConfig("1.2.3.4", 22, "root", "deploy_key", "/root/x"))
+    result = doctor.check_server(tmp_path)
+    assert not result.ok and "set-server" in result.detail

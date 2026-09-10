@@ -1,11 +1,12 @@
 # GitHub Actions: сначала проверки (линтер + тесты без Docker), затем деплой на сервер.
 #
-# Необходимые секреты для деплоя (Settings → Secrets and variables → Actions):
-# - SERVER_HOST: IP-адрес или домен сервера
-# - SERVER_USER: имя пользователя SSH (например, deploy)
-# - SSH_PRIVATE_KEY: приватный SSH ключ (содержимое файла ~/.ssh/id_ed25519)
-# - PROJECT_PATH: путь к проекту на сервере (например, /home/deploy/my_bot)
+# Секреты для деплоя публикует команда `just deploy-github` (через gh CLI), вручную ничего копировать не нужно:
+# - SERVER_HOST, SERVER_PORT, SERVER_USER — адрес сервера и пользователь SSH
+# - SSH_PRIVATE_KEY — приватный ключ из .deploy/deploy_key (его поставил `just set-server`)
+# - PROJECT_PATH — папка проекта на сервере
+# - ENV_PROD — содержимое .env.prod
 #
+# Деплой делает тот же скрипт, что и `just deploy` с ноутбука: scripts/remote_deploy.py.
 # Если секреты не заданы, job deploy будет пропущен, а проверки всё равно выполнятся.
 
 name: Check and Deploy
@@ -39,28 +40,33 @@ jobs:
     env:
       HAS_DEPLOY_SECRETS: ${{ secrets.SERVER_HOST != '' }}
     steps:
-      - name: Deploy via SSH
-        if: env.HAS_DEPLOY_SECRETS == 'true'
-        uses: appleboy/ssh-action@v1.2.5
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script_stop: true
-          script: |
-            echo "=== Начало деплоя ==="
-            cd ${{ secrets.PROJECT_PATH }}
-
-            echo "=== Git pull ==="
-            git pull origin main
-
-            echo "=== Запуск деплоя ==="
-            make ci-deploy
-
-            echo "=== Проверка здоровья сервисов ==="
-            make ci-health
-
-            echo "=== Деплой завершен успешно ==="
       - name: Skip
         if: env.HAS_DEPLOY_SECRETS != 'true'
-        run: echo "Секреты деплоя не заданы — пропускаю"
+        run: echo "Секреты деплоя не заданы — пропускаю. Настроить: just set-server && just deploy-github"
+      - uses: actions/checkout@v7
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+      - uses: actions/setup-python@v7
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        with:
+          python-version: "3.11"
+      - name: Install paramiko
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        run: pip install paramiko
+      - name: Prepare key and .env.prod from secrets
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          ENV_PROD: ${{ secrets.ENV_PROD }}
+        run: |
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/deploy_key"
+          printf '%s' "$ENV_PROD" > .env.prod
+      - name: Deploy via SSH
+        if: env.HAS_DEPLOY_SECRETS == 'true'
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          PROJECT_PATH: ${{ secrets.PROJECT_PATH }}
+          SSH_KEY_FILE: ${{ runner.temp }}/deploy_key
+        run: python scripts/remote_deploy.py deploy

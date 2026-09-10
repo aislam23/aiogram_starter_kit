@@ -29,7 +29,7 @@ PLACEHOLDER_HINTS = ("CHANGE_ME", "your_", "example", "placeholder", "<", "${", 
 DOC_SUFFIXES = {".md", ".example", ".txt"}  # в документации пароли-примеры допустимы, токены — нет
 NOQA = "noqa: secret"
 SKIP_NAMES = {".env", ".env.prod", ".env.local", ".env.staging", ".env.test"}
-SKIP_DIRS = {".venv", "venv", "node_modules", ".git", "__pycache__", "logs"}
+SKIP_DIRS = {".venv", "venv", "node_modules", ".git", "__pycache__", "logs", ".deploy"}
 TEXT_SUFFIXES = {".py", ".yml", ".yaml", ".md", ".txt", ".toml", ".json", ".sh", ".env", "", ".example", ".cfg", ".ini", ".sql"}
 
 

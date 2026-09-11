@@ -3,6 +3,7 @@
 """
 import asyncio
 import sys
+from contextlib import suppress
 
 import aiohttp
 from aiogram import Bot, Dispatcher
@@ -17,6 +18,7 @@ from app.config import settings
 from app.database import db
 from app.handlers import setup_routers
 from app.middlewares import setup_middlewares
+from app.services.liveness import liveness
 from app.utils import register_secret, setup_logging
 
 
@@ -82,8 +84,13 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
     return bot, dp
 
 
+_liveness_scheduler_task: asyncio.Task | None = None
+
+
 async def on_startup(bot: Bot) -> None:
     """Действия при запуске бота"""
+    global _liveness_scheduler_task
+
     # Инициализируем базу данных
     try:
         await db.create_tables()
@@ -98,10 +105,24 @@ async def on_startup(bot: Bot) -> None:
     logger.info(f"🏠 Environment: {settings.env}")
     logger.info(f"🌐 API Mode: {settings.api_mode_name}")
 
+    # Проверка живых пользователей: ручной запуск из /admin и ночной автопрогон
+    liveness.configure(bot)
+    if settings.liveness_check_interval_days > 0:
+        _liveness_scheduler_task = asyncio.create_task(liveness.run_scheduler(), name="liveness-scheduler")
+
 
 async def on_shutdown(bot: Bot) -> None:
     """Действия при остановке бота"""
     logger.info("🛑 Bot is shutting down...")
+
+    # Останавливаем прогон проверки живых (если идёт) и планировщик; ждём, чтобы пачка и итог записались
+    if liveness.stop():
+        await liveness.wait(timeout=10)
+    if _liveness_scheduler_task is not None:
+        _liveness_scheduler_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _liveness_scheduler_task
+
     await bot.session.close()
 
 

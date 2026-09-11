@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     # Примеры хендлеров (/survey, /items) — образцы паттернов, выключите в продакшене
     example_handlers: bool = Field(False, alias="EXAMPLE_HANDLERS")
 
+    # Часовой пояс для расписаний и отчётов (IANA, например Europe/Moscow)
+    timezone: str = Field("Europe/Moscow", alias="TIMEZONE")
+
+    # Проверка живых пользователей (app/services/liveness.py): раз в N дней ночью бот
+    # шлёт sendChatAction каждому пользователю и помечает заблокировавших. 0 — только вручную из /admin
+    liveness_check_interval_days: int = Field(7, alias="LIVENESS_CHECK_INTERVAL_DAYS")
+    # Запросов в секунду во время прогона (делит лимит Telegram ~30/с с живым трафиком)
+    liveness_rate_limit_rps: int = Field(15, alias="LIVENESS_RATE_LIMIT_RPS")
+
     # Local Bot API settings
     use_local_api: bool = Field(False, alias="USE_LOCAL_API")
     telegram_api_id: str = Field("", alias="TELEGRAM_API_ID")

@@ -37,7 +37,7 @@ class ProgressReporter:
         self._last_edit_at = 0.0      # time.monotonic() последней удачной правки
         self._muted_until = 0.0       # time.monotonic(), до которого молчим из-за flood-wait
 
-    async def update(self, text: str) -> bool:
+    async def update(self, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> bool:
         """Обновить прогресс. Возвращает True, если сообщение реально отредактировано."""
         now = time.monotonic()
         if now < self._muted_until:
@@ -46,7 +46,7 @@ class ProgressReporter:
             return False
 
         try:
-            await self.message.edit_text(text)
+            await self.message.edit_text(text, reply_markup=reply_markup)
         except TelegramRetryAfter as e:
             self._muted_until = now + e.retry_after + 1
             logger.warning(f"Прогресс: flood-wait {e.retry_after}s, обновления приостановлены")
@@ -62,12 +62,12 @@ class ProgressReporter:
         self._last_edit_at = now
         return True
 
-    async def finish(self, text: str) -> None:
+    async def finish(self, text: str, reply_markup: Optional[InlineKeyboardMarkup] = None) -> None:
         """Доставить финальный текст: сначала правкой, при неудаче — новым сообщением."""
-        if await self._with_flood_wait(lambda: self.message.edit_text(text)):
+        if await self._with_flood_wait(lambda: self.message.edit_text(text, reply_markup=reply_markup)):
             return
         logger.warning("Финальный отчёт не удалось вписать в сообщение прогресса, шлём новым")
-        await self._with_flood_wait(lambda: self.message.answer(text))
+        await self._with_flood_wait(lambda: self.message.answer(text, reply_markup=reply_markup))
 
     async def _with_flood_wait(self, call: Callable[[], Awaitable[Any]]) -> bool:
         """Выполнить вызов Telegram, пережидая flood-wait до FINAL_ATTEMPTS раз."""
@@ -103,7 +103,7 @@ class BroadcastService:
         progress_callback: Optional[callable] = None
     ) -> Dict[str, int]:
         """
-        Отправка рассылки всем пользователям
+        Отправка рассылки всем живым пользователям (не заблокировавшим бота)
 
         Args:
             message: Сообщение для рассылки
@@ -113,7 +113,7 @@ class BroadcastService:
         Returns:
             Словарь со статистикой отправки
         """
-        users = await db.get_active_users()
+        users = await db.get_alive_users()
 
         stats = {
             "total": len(users),
@@ -287,8 +287,12 @@ class BroadcastService:
         except TelegramRetryAfter:
             raise
         except TelegramForbiddenError:
-            # Пользователь заблокировал бота
+            # Пользователь заблокировал бота — запоминаем, чтобы не слать ему дальше
             logger.debug(f"Пользователь {user_id} заблокировал бота")
+            try:
+                await db.set_bot_blocked(user_id, True)
+            except Exception as e:
+                logger.warning(f"Не удалось пометить {user_id} как заблокировавшего бота: {e}")
             raise
         except TelegramBadRequest as e:
             # Другие ошибки Telegram API

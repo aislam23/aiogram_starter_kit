@@ -1,17 +1,17 @@
 """
 Класс для работы с базой данных
 """
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import List, Optional
 
 from loguru import logger
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
 
 from .migrations import MigrationManager
-from .models import Base, BotStats, MigrationHistory, User
+from .models import Base, BotStats, LivenessCheck, MigrationHistory, User
 
 
 class Database:
@@ -67,6 +67,9 @@ class Database:
                 existing_user.first_name = first_name
                 existing_user.last_name = last_name
                 existing_user.is_active = True
+                # Написал боту — значит, не блокирует его (даже если my_chat_member потерялся)
+                existing_user.bot_blocked = False
+                existing_user.bot_blocked_at = None
                 existing_user.updated_at = datetime.utcnow()
                 await session.commit()
                 return existing_user
@@ -134,6 +137,47 @@ class Database:
             result = await session.execute(select(User).where(User.is_active.is_(True)))
             return result.scalars().all()
 
+    @staticmethod
+    def _alive_clause():
+        """Живой пользователь: не отключён и не заблокировал бота"""
+        return (User.is_active.is_(True), User.bot_blocked.is_(False))
+
+    async def get_alive_users(self) -> List[User]:
+        """Живые пользователи — получатели рассылок"""
+        async with self.session_maker() as session:
+            result = await session.execute(select(User).where(*self._alive_clause()))
+            return result.scalars().all()
+
+    async def get_alive_users_count(self) -> int:
+        """Количество живых пользователей — то же условие, что и get_alive_users()"""
+        async with self.session_maker() as session:
+            result = await session.execute(select(func.count(User.id)).where(*self._alive_clause()))
+            return result.scalar() or 0
+
+    async def get_blocked_users_count(self) -> int:
+        """Сколько пользователей заблокировали бота или удалили аккаунт"""
+        async with self.session_maker() as session:
+            result = await session.execute(select(func.count(User.id)).where(User.bot_blocked.is_(True)))
+            return result.scalar() or 0
+
+    async def set_bot_blocked(self, user_id: int, blocked: bool) -> None:
+        """Отметить, что пользователь заблокировал (True) или разблокировал (False) бота.
+
+        updated_at намеренно не трогаем — это «последняя активность» пользователя, а не наша.
+        bot_blocked_at — когда впервые узнали о блокировке.
+        """
+        async with self.session_maker() as session:
+            await session.execute(
+                update(User)
+                .where(User.id == user_id)
+                .values(
+                    bot_blocked=blocked,
+                    bot_blocked_at=func.coalesce(User.bot_blocked_at, datetime.now(UTC)) if blocked else None,
+                    updated_at=User.updated_at,
+                )
+            )
+            await session.commit()
+
     async def get_users_count(self) -> int:
         """Получение количества пользователей"""
         async with self.session_maker() as session:
@@ -178,6 +222,86 @@ class Database:
         """Получение статистики бота"""
         async with self.session_maker() as session:
             result = await session.execute(select(BotStats).order_by(BotStats.id.desc()).limit(1))
+            return result.scalar_one_or_none()
+
+    # ==================== Проверка живых (LivenessService) ====================
+
+    async def count_liveness_users(self) -> int:
+        """Сколько пользователей проверит прогон (все не отключённые, включая помеченных bot_blocked)"""
+        return await self.get_active_users_count()
+
+    async def get_liveness_user_ids(self, after_id: int, limit: int) -> List[int]:
+        """Очередная пачка id для проверки (курсор по id)"""
+        async with self.session_maker() as session:
+            result = await session.execute(
+                select(User.id)
+                .where(User.is_active.is_(True), User.id > after_id)
+                .order_by(User.id)
+                .limit(limit)
+            )
+            return result.scalars().all()
+
+    async def apply_liveness_results(
+        self, checked_ids: List[int], alive_ids: List[int], blocked_ids: List[int]
+    ) -> None:
+        """Записать результаты пачки одной транзакцией. updated_at не трогаем."""
+        if not checked_ids:
+            return
+        now = datetime.now(UTC)
+        async with self.session_maker() as session:
+            await session.execute(
+                update(User)
+                .where(User.id.in_(checked_ids))
+                .values(last_liveness_check_at=now, updated_at=User.updated_at)
+            )
+            if alive_ids:
+                await session.execute(
+                    update(User)
+                    .where(User.id.in_(alive_ids))
+                    .values(bot_blocked=False, bot_blocked_at=None, updated_at=User.updated_at)
+                )
+            if blocked_ids:
+                await session.execute(
+                    update(User)
+                    .where(User.id.in_(blocked_ids))
+                    .values(
+                        bot_blocked=True,
+                        bot_blocked_at=func.coalesce(User.bot_blocked_at, now),
+                        updated_at=User.updated_at,
+                    )
+                )
+            await session.commit()
+
+    async def create_liveness_check(self, trigger: str) -> int:
+        """Создать запись прогона, вернуть её id"""
+        async with self.session_maker() as session:
+            check = LivenessCheck(trigger=trigger)
+            session.add(check)
+            await session.commit()
+            return check.id
+
+    async def update_liveness_check(
+        self, check_id: int, *, checked: int, alive: int, blocked: int,
+        deleted: int, errors: int, finished: bool, cancelled: bool = False,
+    ) -> None:
+        """Обновить счётчики прогона; finished=True проставляет finished_at и cancelled"""
+        values = dict(checked=checked, alive=alive, blocked=blocked, deleted=deleted, errors=errors)
+        if finished:
+            values["finished_at"] = datetime.now(UTC)
+            values["cancelled"] = cancelled
+        async with self.session_maker() as session:
+            await session.execute(update(LivenessCheck).where(LivenessCheck.id == check_id).values(**values))
+            await session.commit()
+
+    async def get_last_completed_liveness_check(self) -> Optional[LivenessCheck]:
+        """Последний прогон, доведённый до конца (остановленный или упавший расписание не сдвигает)"""
+        async with self.session_maker() as session:
+            result = await session.execute(
+                select(LivenessCheck)
+                .where(LivenessCheck.finished_at.isnot(None), LivenessCheck.cancelled.is_(False))
+                .order_by(LivenessCheck.finished_at.desc())
+                .limit(1)
+            )
             return result.scalar_one_or_none()
 
     async def get_migration_history(self) -> List[MigrationHistory]:

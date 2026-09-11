@@ -22,13 +22,14 @@
 | Точка входа | `app/main.py` | Bot + Dispatcher, middleware, роутеры, миграции при старте, polling |
 | Настройки | `app/config.py` → `settings` | Pydantic Settings из `.env`; `settings.is_admin(id)` |
 | Хендлеры | `app/handlers/` | Один файл = один `Router`; регистрация в `app/handlers/__init__.py` |
+| Статус бота у пользователя | `app/handlers/chat_member.py` | `my_chat_member` в личке → `users.bot_blocked` (заблокировал / разблокировал бота) |
 | Примеры | `app/handlers/examples/` | FSM-анкета `/survey`, пагинация `/items`. Включаются `EXAMPLE_HANDLERS=true` |
 | Админка | `app/handlers/admin/` | `/admin`, управление админами (`admins.py`), рассылки, настройки API |
 | Фильтры | `app/filters/` | `IsAdmin()` в декораторе; внутри хендлера доступен аргумент `is_admin: bool` из middleware |
 | Middleware | `app/middlewares/` | Логирование, автосохранение пользователей, распознавание админов по username (outer) |
 | FSM | `app/states/` | `StatesGroup` для многошаговых сценариев; хранилище — Redis |
 | Клавиатуры | `app/keyboards/` | Inline-клавиатуры через `InlineKeyboardBuilder` |
-| Сервисы | `app/services/` | Логика, не зависящая от aiogram (рассылка и т.п.) |
+| Сервисы | `app/services/` | Логика, не зависящая от aiogram: `broadcast.py` (рассылка, `ProgressReporter`), `liveness.py` (проверка живых пользователей + ночной планировщик) |
 | БД | `app/database/` | SQLAlchemy async + asyncpg; `db` — синглтон с методами |
 | Миграции | `app/database/migrations/versions/` | Свои классы `Migration`, применяются при старте |
 | Логи | `logs/bot.jsonl` | JSON Lines, секреты замаскированы |
@@ -192,8 +193,27 @@ async def test_button(harness, user):
 
 ### 4.11 Планировщик / фоновые задачи
 
-Запускай через `asyncio.create_task` в `on_startup` (`app/main.py`) или добавь `apscheduler`
-в `requirements.txt`. Не блокируй event loop.
+Образец: `LivenessService.run_scheduler` в `app/services/liveness.py` — задача создаётся в `on_startup`
+(`app/main.py`), отменяется в `on_shutdown`, тикает раз в час и сама решает, пора ли работать.
+Запускай через `asyncio.create_task` в `on_startup` или добавь `apscheduler` в `requirements.txt`.
+Не блокируй event loop.
+
+### 4.12 Статус пользователя: живой, отключён, заблокировал бота
+
+У пользователя два независимых флага в `users`:
+
+- `is_active` — учётная активность (сбрасывать в `False` можно, например, при бане админом);
+- `bot_blocked` — пользователь заблокировал бота или удалил аккаунт. Ставится тремя путями:
+  `my_chat_member` (`app/handlers/chat_member.py`, мгновенно), 403 при рассылке (`BroadcastService`),
+  прогон проверки живых (`LivenessService`, кнопка «🩺 Проверить живых» в `/admin` и ночной автопрогон
+  раз в `LIVENESS_CHECK_INTERVAL_DAYS` дней). Снимается, когда пользователь снова пишет боту.
+
+**Живой** = `is_active AND NOT bot_blocked` — `db.get_alive_users()` / `get_alive_users_count()`.
+Рассылки и счётчики в админке считают только живых. Новые выборки «кому отправить» строй на них,
+а не на `get_active_users()`.
+
+Сервисные UPDATE по `users` (пометка блокировки, результаты прогона) передают `updated_at=User.updated_at`,
+чтобы не подделывать «последнюю активность» пользователя. Делай так же в своих служебных обновлениях.
 
 ## 5. Чего не делать
 
@@ -201,6 +221,7 @@ async def test_button(harness, user):
 - Не хранить состояние в глобальных переменных: есть FSM (Redis) и БД.
 - Не вызывать `db.*` в `keyboards/` или `states/`. Данные — в хендлерах и сервисах.
 - Не отправлять сообщения в цикле без задержек: Telegram ограничивает ~30 сообщений/сек (см. `BroadcastService`).
+- Не слать рассылки по `get_active_users()` / всем подряд: заблокировавшие бота дают 403 и тратят лимит. Только `get_alive_users()`.
 - Не редактировать одно сообщение прогресса на каждом шаге долгого цикла: Telegram включает flood control на `editMessageText`, экран замирает, а финальный отчёт не доходит. Используй `ProgressReporter` из `app/services/broadcast.py` (троттлинг + устойчивый финал).
 - Не менять `check_can_apply` уже применённых миграций.
 - Не отключать `IsAdmin()` и проверки прав «для отладки».

@@ -29,7 +29,18 @@ from aiogram.methods import (
     TelegramMethod,
 )
 from aiogram.methods.base import TelegramType
-from aiogram.types import CallbackQuery, Chat, InlineKeyboardMarkup, Message, TelegramObject, Update, User
+from aiogram.types import (
+    CallbackQuery,
+    Chat,
+    ChatMemberBanned,
+    ChatMemberMember,
+    ChatMemberUpdated,
+    InlineKeyboardMarkup,
+    Message,
+    TelegramObject,
+    Update,
+    User,
+)
 
 from app.handlers import setup_routers
 from app.middlewares import setup_middlewares
@@ -201,6 +212,24 @@ class BotHarness:
         )
         await self.dp.feed_update(self.bot, update)
         return [c for c in self.calls[before:] if isinstance(c, (SendMessage, EditMessageText))]
+
+    async def send_my_chat_member(self, user: Optional[User] = None, blocked: bool = True) -> None:
+        """Пользователь заблокировал (blocked=True) или разблокировал бота в личном чате."""
+        user = user or make_user()
+        update_id, _ = self._next_ids()
+        member = ChatMemberMember(user=BOT_USER)
+        banned = ChatMemberBanned(user=BOT_USER, until_date=datetime.fromtimestamp(0, UTC))
+        update = Update(
+            update_id=update_id,
+            my_chat_member=ChatMemberUpdated(
+                chat=Chat(id=user.id, type="private", first_name=user.first_name),
+                from_user=user,
+                date=datetime.now(UTC),
+                old_chat_member=member if blocked else banned,
+                new_chat_member=banned if blocked else member,
+            ),
+        )
+        await self.dp.feed_update(self.bot, update)
 
     async def state_of(self, user: Optional[User] = None) -> Optional[str]:
         """Текущее FSM-состояние пользователя."""

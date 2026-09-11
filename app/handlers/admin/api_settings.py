@@ -10,7 +10,6 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 
 from app.config import settings
-from app.database import db
 from app.keyboards import AdminKeyboards
 
 router = Router()
@@ -149,24 +148,8 @@ async def api_back_handler(callback: CallbackQuery, is_admin: bool = False):
         await callback.answer("Нет прав")
         return
 
-    stats = await db.get_bot_stats()
-    if not stats:
-        stats = await db.update_bot_stats()
+    from .admin import admin_panel_text
 
-    total_users = await db.get_users_count()
-    active_users = await db.get_active_users_count()
-    last_restart = stats.last_restart.strftime("%d.%m.%Y %H:%M:%S")
-
-    text = f"""
-<b>Админская панель</b>
-
-<b>Статистика бота:</b>
-Всего пользователей: <b>{total_users}</b>
-Активных: <b>{active_users}</b>
-Статус: <b>{stats.status}</b>
-Последний запуск: <b>{last_restart}</b>
-Режим API: <b>{settings.api_mode_name}</b>
-"""
-
+    text = await admin_panel_text()
     await callback.message.edit_text(text, reply_markup=AdminKeyboards.main_admin_menu())
     await callback.answer()

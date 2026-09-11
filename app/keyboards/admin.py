@@ -27,6 +27,11 @@ class AdminKeyboards:
         ))
 
         builder.add(InlineKeyboardButton(
+            text="🩺 Проверить живых",
+            callback_data="admin_liveness"
+        ))
+
+        builder.add(InlineKeyboardButton(
             text="👥 Администраторы",
             callback_data="admin_manage"
         ))
@@ -77,6 +82,32 @@ class AdminKeyboards:
             resize_keyboard=True,
             one_time_keyboard=True,
         )
+
+    @staticmethod
+    def liveness_confirm() -> InlineKeyboardMarkup:
+        """Подтверждение запуска проверки живых"""
+        builder = InlineKeyboardBuilder()
+        builder.button(text="✅ Запустить", callback_data="liveness:confirm")
+        builder.button(text="⬅️ Назад", callback_data="liveness:back")
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def liveness_running() -> InlineKeyboardMarkup:
+        """Во время прогона"""
+        builder = InlineKeyboardBuilder()
+        builder.button(text="⏹ Остановить", callback_data="liveness:stop")
+        builder.button(text="🔄 Обновить", callback_data="liveness:refresh")
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def liveness_done() -> InlineKeyboardMarkup:
+        """После прогона"""
+        builder = InlineKeyboardBuilder()
+        builder.button(text="⬅️ Назад", callback_data="liveness:back")
+        builder.adjust(1)
+        return builder.as_markup()
 
     @staticmethod
     def broadcast_confirm(message_count: int) -> InlineKeyboardMarkup:

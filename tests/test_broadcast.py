@@ -26,13 +26,13 @@ class FakeProgressMessage:
         self.answers: list[str] = []
         self.fail_edits = fail_edits
 
-    async def edit_text(self, text: str):
+    async def edit_text(self, text: str, reply_markup=None):
         if self.fail_edits > 0:
             self.fail_edits -= 1
             raise retry_after(2)
         self.edits.append(text)
 
-    async def answer(self, text: str):
+    async def answer(self, text: str, reply_markup=None):
         self.answers.append(text)
 
 

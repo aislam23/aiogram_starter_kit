@@ -56,7 +56,8 @@ async def admin_panel_text() -> str:
         stats = await db.update_bot_stats()
 
     total_users = await db.get_users_count()
-    active_users = await db.get_active_users_count()
+    alive_users = await db.get_alive_users_count()
+    blocked_users = await db.get_blocked_users_count()
     last_restart = stats.last_restart.strftime("%d.%m.%Y %H:%M:%S")
 
     return f"""
@@ -64,7 +65,8 @@ async def admin_panel_text() -> str:
 
 📊 <b>Статистика бота:</b>
 👥 Всего пользователей: <b>{total_users}</b>
-✅ Активных пользователей: <b>{active_users}</b>
+✅ Живых: <b>{alive_users}</b>
+🚫 Заблокировали бота: <b>{blocked_users}</b>
 🟢 Статус: <b>{stats.status}</b>
 🕐 Последний запуск: <b>{last_restart}</b>
 
@@ -102,7 +104,7 @@ async def receive_broadcast_message(message: Message, state: FSMContext, is_admi
     await state.update_data(broadcast_message=message)
 
     # Получаем количество пользователей для рассылки
-    users_count = await db.get_active_users_count()
+    users_count = await db.get_alive_users_count()
 
     await message.answer(
         f"✅ <b>Сообщение получено!</b>\n\n"
@@ -170,7 +172,7 @@ async def receive_broadcast_button(message: Message, state: FSMContext, is_admin
     )
 
     # Переходим к подтверждению
-    users_count = await db.get_active_users_count()
+    users_count = await db.get_alive_users_count()
 
     await message.answer(
         f"📤 <b>Подтверждение рассылки</b>\n\n"
@@ -184,7 +186,7 @@ async def receive_broadcast_button(message: Message, state: FSMContext, is_admin
 @router.callback_query(F.data == "broadcast_no_button", StateFilter(AdminStates.broadcast_message))
 async def broadcast_without_button(callback: CallbackQuery, state: FSMContext):
     """Рассылка без кнопки"""
-    users_count = await db.get_active_users_count()
+    users_count = await db.get_alive_users_count()
 
     await callback.message.edit_text(
         f"📤 <b>Подтверждение рассылки</b>\n\n"

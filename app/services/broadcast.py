@@ -2,18 +2,96 @@
 Сервис рассылки сообщений
 """
 import asyncio
-from typing import Dict, Optional
+import time
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.types import InlineKeyboardMarkup, Message
 from loguru import logger
 
 from app.database import db
 
 
+class ProgressReporter:
+    """
+    Обновляет одно сообщение о ходе длинной операции, не упираясь в flood control.
+
+    Telegram ограничивает частоту editMessageText в одном чате. Рассылка на
+    десятки тысяч человек дёргает прогресс тысячи раз подряд — без троттлинга
+    сообщение через ~40 минут перестаёт обновляться, а каждый новый вызов во
+    время flood-wait продлевает бан, так что и финальный отчёт не доходит.
+
+    - `update()` редактирует не чаще `min_interval` секунд и молчит,
+      пока действует flood-wait;
+    - `finish()` доставляет финальный текст обязательно: ждёт flood-wait,
+      повторяет, а если редактирование так и не удалось — шлёт новым сообщением.
+    """
+
+    MIN_INTERVAL = 5.0   # секунд между правками прогресса
+    FINAL_ATTEMPTS = 3   # попыток доставить финальный отчёт
+
+    def __init__(self, message: Message, min_interval: float = MIN_INTERVAL):
+        self.message = message
+        self.min_interval = min_interval
+        self._last_edit_at = 0.0      # time.monotonic() последней удачной правки
+        self._muted_until = 0.0       # time.monotonic(), до которого молчим из-за flood-wait
+
+    async def update(self, text: str) -> bool:
+        """Обновить прогресс. Возвращает True, если сообщение реально отредактировано."""
+        now = time.monotonic()
+        if now < self._muted_until:
+            return False
+        if now - self._last_edit_at < self.min_interval:
+            return False
+
+        try:
+            await self.message.edit_text(text)
+        except TelegramRetryAfter as e:
+            self._muted_until = now + e.retry_after + 1
+            logger.warning(f"Прогресс: flood-wait {e.retry_after}s, обновления приостановлены")
+            return False
+        except TelegramBadRequest as e:
+            # Обычно "message is not modified" — текст не изменился, это не ошибка
+            logger.debug(f"Прогресс не обновлён: {e}")
+            return False
+        except Exception as e:
+            logger.warning(f"Прогресс не обновлён: {e}")
+            return False
+
+        self._last_edit_at = now
+        return True
+
+    async def finish(self, text: str) -> None:
+        """Доставить финальный текст: сначала правкой, при неудаче — новым сообщением."""
+        if await self._with_flood_wait(lambda: self.message.edit_text(text)):
+            return
+        logger.warning("Финальный отчёт не удалось вписать в сообщение прогресса, шлём новым")
+        await self._with_flood_wait(lambda: self.message.answer(text))
+
+    async def _with_flood_wait(self, call: Callable[[], Awaitable[Any]]) -> bool:
+        """Выполнить вызов Telegram, пережидая flood-wait до FINAL_ATTEMPTS раз."""
+        for attempt in range(self.FINAL_ATTEMPTS):
+            try:
+                await call()
+                return True
+            except TelegramRetryAfter as e:
+                logger.warning(
+                    f"Финальный отчёт: flood-wait {e.retry_after}s, "
+                    f"попытка {attempt + 1}/{self.FINAL_ATTEMPTS}"
+                )
+                await asyncio.sleep(e.retry_after + 1)
+            except Exception as e:
+                logger.error(f"Финальный отчёт не доставлен: {e}")
+                return False
+        return False
+
+
 class BroadcastService:
     """Сервис для рассылки сообщений"""
+
+    # Сколько раз повторять отправку одному пользователю после flood-wait (429)
+    MAX_RETRIES = 3
 
     def __init__(self, bot: Bot):
         self.bot = bot
@@ -105,6 +183,32 @@ class BroadcastService:
         Returns:
             True если сообщение отправлено успешно
         """
+        for attempt in range(self.MAX_RETRIES + 1):
+            try:
+                return await self._send_once(user_id, message, custom_keyboard)
+            except TelegramRetryAfter as e:
+                # Flood-wait: Telegram просит подождать. Ждём и повторяем,
+                # иначе получатель молча выпал бы из рассылки.
+                if attempt >= self.MAX_RETRIES:
+                    logger.warning(
+                        f"Пользователь {user_id}: flood-wait {e.retry_after}s, "
+                        f"попытки исчерпаны ({self.MAX_RETRIES})"
+                    )
+                    return False
+                logger.warning(
+                    f"Пользователь {user_id}: flood-wait {e.retry_after}s, "
+                    f"повтор {attempt + 1}/{self.MAX_RETRIES}"
+                )
+                await asyncio.sleep(e.retry_after + 0.5)
+        return False
+
+    async def _send_once(
+        self,
+        user_id: int,
+        message: Message,
+        custom_keyboard: Optional[InlineKeyboardMarkup] = None
+    ) -> bool:
+        """Одна попытка отправки. TelegramRetryAfter пробрасывается наверх для повтора."""
         try:
             # Определяем тип сообщения и отправляем соответствующим методом
             if message.text:
@@ -180,6 +284,8 @@ class BroadcastService:
 
             return True
 
+        except TelegramRetryAfter:
+            raise
         except TelegramForbiddenError:
             # Пользователь заблокировал бота
             logger.debug(f"Пользователь {user_id} заблокировал бота")

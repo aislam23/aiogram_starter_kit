@@ -12,7 +12,7 @@ from loguru import logger
 from app.database import db
 from app.filters import IsAdmin
 from app.keyboards import AdminKeyboards
-from app.services import BroadcastService
+from app.services import BroadcastService, ProgressReporter
 from app.states import AdminStates
 
 router = Router()
@@ -220,6 +220,10 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
             data["button_url"]
         )
 
+    # Отвечаем на callback сразу: рассылка идёт долго, а callback query
+    # протухает через несколько секунд — ответ в конце вызвал бы ошибку
+    await callback.answer()
+
     # Начинаем рассылку
     broadcast_service = BroadcastService(bot)
 
@@ -231,22 +235,18 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
         "❌ Ошибок: <b>0</b>\n"
         "🚫 Заблокировано: <b>0</b>"
     )
+    reporter = ProgressReporter(progress_message)
 
-    # Функция для обновления прогресса
+    # Функция для обновления прогресса (репортер сам троттлит и переживает flood-wait)
     async def update_progress(stats: dict):
         progress_percent = int((stats["sent"] + stats["failed"] + stats["blocked"]) / stats["total"] * 100)
-
-        try:
-            await progress_message.edit_text(
-                f"📤 <b>Рассылка в процессе...</b>\n\n"
-                f"📊 Прогресс: <b>{progress_percent}%</b>\n"
-                f"✅ Отправлено: <b>{stats['sent']}</b>\n"
-                f"❌ Ошибок: <b>{stats['failed']}</b>\n"
-                f"🚫 Заблокировано: <b>{stats['blocked']}</b>"
-            )
-        except Exception:
-            # Игнорируем ошибки обновления прогресса
-            pass
+        await reporter.update(
+            f"📤 <b>Рассылка в процессе...</b>\n\n"
+            f"📊 Прогресс: <b>{progress_percent}%</b>\n"
+            f"✅ Отправлено: <b>{stats['sent']}</b>\n"
+            f"❌ Ошибок: <b>{stats['failed']}</b>\n"
+            f"🚫 Заблокировано: <b>{stats['blocked']}</b>"
+        )
 
     # Запускаем рассылку
     try:
@@ -256,28 +256,32 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
             progress_callback=update_progress
         )
 
-        # Финальная статистика
-        success_rate = int(final_stats["sent"] / final_stats["total"] * 100) if final_stats["total"] > 0 else 0
-
-        await progress_message.edit_text(
-            f"✅ <b>Рассылка завершена!</b>\n\n"
-            f"📊 <b>Итоговая статистика:</b>\n"
-            f"👥 Всего получателей: <b>{final_stats['total']}</b>\n"
-            f"✅ Успешно доставлено: <b>{final_stats['sent']}</b>\n"
-            f"❌ Ошибок доставки: <b>{final_stats['failed']}</b>\n"
-            f"🚫 Заблокировали бота: <b>{final_stats['blocked']}</b>\n"
-            f"📈 Успешность: <b>{success_rate}%</b>"
-        )
+        await reporter.finish(format_broadcast_report(final_stats))
 
     except Exception as e:
         logger.error(f"Ошибка при рассылке: {e}")
-        await progress_message.edit_text(
+        await reporter.finish(
             f"❌ <b>Ошибка при рассылке!</b>\n\n"
             f"Описание: <code>{str(e)}</code>"
         )
+    finally:
+        # Сбрасываем состояние при любом исходе, иначе следующее сообщение
+        # админа будет принято за контент новой рассылки
+        await state.clear()
 
-    await state.clear()
-    await callback.answer()
+
+def format_broadcast_report(final_stats: dict) -> str:
+    """Текст финального отчёта о рассылке"""
+    success_rate = int(final_stats["sent"] / final_stats["total"] * 100) if final_stats["total"] > 0 else 0
+    return (
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"📊 <b>Итоговая статистика:</b>\n"
+        f"👥 Всего получателей: <b>{final_stats['total']}</b>\n"
+        f"✅ Успешно доставлено: <b>{final_stats['sent']}</b>\n"
+        f"❌ Ошибок доставки: <b>{final_stats['failed']}</b>\n"
+        f"🚫 Заблокировали бота: <b>{final_stats['blocked']}</b>\n"
+        f"📈 Успешность: <b>{success_rate}%</b>"
+    )
 
 
 @router.callback_query(F.data == "broadcast_confirm_no")

@@ -1,6 +1,6 @@
 """
 Services package
 """
-from .broadcast import BroadcastService
+from .broadcast import BroadcastService, ProgressReporter
 
-__all__ = ["BroadcastService"]
+__all__ = ["BroadcastService", "ProgressReporter"]

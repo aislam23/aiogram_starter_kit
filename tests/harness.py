@@ -29,7 +29,7 @@ from aiogram.methods import (
     TelegramMethod,
 )
 from aiogram.methods.base import TelegramType
-from aiogram.types import CallbackQuery, Chat, InlineKeyboardMarkup, Message, Update, User
+from aiogram.types import CallbackQuery, Chat, InlineKeyboardMarkup, Message, TelegramObject, Update, User
 
 from app.handlers import setup_routers
 from app.middlewares import setup_middlewares
@@ -55,7 +55,12 @@ class FakeSession(BaseSession):
         self, bot: Bot, method: TelegramMethod[TelegramType], timeout: Optional[int] = None
     ) -> TelegramType:
         self.calls.append(method)
-        return self._fake_response(method)
+        result = self._fake_response(method)
+        # Реальный aiogram привязывает объекты ответа к боту, чтобы работали
+        # `message.edit_text()` / `message.answer()` на результате вызова
+        if isinstance(result, TelegramObject):
+            result = result.as_(bot)
+        return result
 
     def _fake_response(self, method: TelegramMethod[Any]) -> Any:
         if isinstance(method, GetMe):

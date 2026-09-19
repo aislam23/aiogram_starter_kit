@@ -77,16 +77,21 @@ https://t.me/addemoji/tgiosicons), причём так, чтобы:
 ```
 исходящий метод
   │
-  ├─ метод без полей text/caption/reply_markup (duck-typing по атрибутам, не список классов:
-  │  SendMessage, SendPhoto, SendAudio, SendVoice, EditMessageText, EditMessageCaption,
-  │  EditMessageReplyMarkup, …), или parse_mode не HTML, или переданы явные
-  │  entities / caption_entities → пропустить как есть
+  ├─ SendInvoice / методы без полей text, caption и reply_markup → пропустить как есть
+  │  (duck-typing по атрибутам, не список классов)
   │
   ├─ status.enabled?  ── нет → пропустить как есть (обычные эмодзи; раз в RETRY_AFTER — попробовать)
   │
-  ├─ text/caption → emojify(); reply_markup (inline) → iconify_markup()
-  │      (эмодзи в начале текста кнопки вырезается, ставится icon_custom_emoji_id;
-  │       если после вырезания текст пуст — кнопка не трогается)
+  ├─ две независимые конвертации:
+  │   • text/caption → emojify() — только если итоговый parse_mode == HTML и не переданы
+  │     явные entities / caption_entities (SendMessage, SendPhoto, SendAudio, SendVoice,
+  │     EditMessageText, EditMessageCaption, …);
+  │   • reply_markup (inline) → iconify_markup() — у любого метода, где поле есть, независимо
+  │     от parse_mode (в т.ч. EditMessageReplyMarkup, SendSticker, SendVideoNote — у них
+  │     parse_mode нет вовсе, а клавиатура в рассылке должна выглядеть одинаково).
+  │     Эмодзи в начале текста кнопки вырезается, ставится icon_custom_emoji_id;
+  │     если после вырезания текст пуст — кнопка не трогается.
+  │   Ничего не изменилось → make_request(исходный метод), без детекции.
   │
   ├─ make_request(изменённый метод)
   │      ├─ TelegramBadRequest «message is not modified» → пробросить как есть, без повтора
@@ -115,6 +120,9 @@ https://t.me/addemoji/tgiosicons), причём так, чтобы:
   `enabled: bool = True`, `disabled_at: datetime | None`, `reason: str | None`,
   `RETRY_AFTER = 24 ч`. `enabled` считается `True`, если `disabled_at is None` или прошло больше
   `RETRY_AFTER` — так продление Premium подхватывается без рестарта. При рестарте — снова `True`.
+  `disable()` — no-op, если статус уже выключен (несколько одновременных исходящих после потери
+  Premium не дают дублей уведомления и не перезаписывают ссылку на задачу); после истечения
+  `RETRY_AFTER` срабатывает снова.
 - **Детекция по entities** — основной механизм, работает для обоих вариантов поведения сервера с
   кнопками: первое же текстовое сообщение с иконкой выявляет отсутствие права. Цена потери
   Premium — максимум один экран с кнопками без эмодзи (если сервер молча отбрасывает иконки) или
@@ -131,6 +139,8 @@ https://t.me/addemoji/tgiosicons), причём так, чтобы:
   текст ошибки Telegram: если сломан ID в каталоге, владелец увидит настоящую причину.
   Лог — `warning` с тем же `reason`.
 - **Повторная попытка при ошибке** — только один раз и только для методов, которые мы изменили.
+  Осознанная цена: при массовых ошибках вроде `chat not found` в рассылке запросы удваиваются;
+  это дешевле, чем терять детекцию.
 - **Ответ `True`** (редактирование inline-сообщения) — детекции нет, ничего не делаем.
 - **Рассылка** (`BroadcastService`) шлёт текст, который написал админ, с `parse_mode="HTML"` —
   middleware конвертирует эмодзи и в нём. Это осознанно: рассылка должна выглядеть в стиле бота.
@@ -157,17 +167,21 @@ https://t.me/addemoji/tgiosicons), причём так, чтобы:
   счётчик изменённых кнопок.
 - Согласованность каталога: каждый ключ `EMOJI_TO_ICON` ссылается на существующий атрибут `Icons`,
   ID — строка из цифр, `SUPPORTED_EMOJI` совпадает с ключами.
-- Инвентарь: все эмодзи, встречающиеся в `app/keyboards/**`, `app/handlers/**` и
-  `app/services/**` в строковых литералах UI, есть в `EMOJI_TO_ICON` (список исключений —
-  явный, в тесте; эмодзи только из `logger.*`-вызовов не считаются).
+- Инвентарь: все эмодзи, встречающиеся в `app/keyboards/**`, `app/handlers/**` (включая
+  `examples/`) и `app/services/**` в строковых литералах UI, есть в `EMOJI_TO_ICON`. Реализация:
+  обход AST, строковые константы внутри вызовов `logger.*` пропускаются; эмодзи распознаётся тем же
+  регексом, что и в `emojify`, плюс общий регекс по диапазонам Emoji (`\U0001F300–\U0001FAFF`,
+  `\u2600–\u27BF`, `\u2B00–\u2BFF`, с опциональным VS16), чтобы поймать неизвестные каталогу.
+  Список исключений — явный, в тесте.
 
 Тесты middleware через харнес `tests/test_custom_emoji.py`. Харнес — session-scoped singleton,
 статус — singleton процесса, поэтому режим задаётся явно и сбрасывается в `harness.reset()`
-(сброс также отменяет незавершённую фоновую задачу уведомления, чтобы она не выполнилась после
-отката `monkeypatch` и не ушла в настоящий `db.get_admins()`):
+(незавершённую фоновую задачу уведомления отменяет teardown yield-фикстуры `harness` — до отката
+`monkeypatch`, чтобы задача не ушла в настоящий `db.get_admins()`):
 
 - `harness.premium("off")` — **по умолчанию и после `reset()`**: статус заранее выключен
-  (`disabled_at = now`, уведомление помечено отправленным), сессия entities не отдаёт.
+  (`disabled_at = now` напрямую, `disable()` не вызывается, задачи уведомления нет), сессия
+  entities не отдаёт.
   Конвертации нет, детекция не срабатывает, лишних `SendMessage` админам в `harness.sent` нет —
   существующие тесты (`"📊 Рассылка" in buttons_of(...)`) не меняются и не зависят от каталога.
 - `harness.premium("on")`: статус включён, `FakeSession` отдаёт `entities` с `custom_emoji` за

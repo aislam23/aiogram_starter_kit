@@ -56,7 +56,7 @@ https://t.me/addemoji/tgiosicons), причём так, чтобы:
 | `app/handlers/admin/admin.py` | Строка в главном экране `/admin`: «Иконки: premium» / «Иконки: обычные эмодзи (Premium не активен, проверим снова через N ч)» / «Иконки: выключены (CUSTOM_EMOJI=off)». |
 | `scripts/dump_emoji_pack.py`, `justfile`, `Makefile` | `just emoji-dump [pack]` — через `settings.bot_token` и `get_sticker_set` печатает `эмодзи → ID`. Токен не печатается. |
 | `requirements.txt` | `aiogram==3.31.0` (нужно поле `icon_custom_emoji_id`). |
-| `tests/harness.py` | `FakeSession` умеет режим `premium=True/False`: отдаёт `entities` с `custom_emoji` за каждый `<tg-emoji>` в тексте либо без них; middleware подключается к боту харнеса как в проде. |
+| `tests/harness.py` | `harness.premium("off" \| "on" \| "lost")` (см. «Тестирование»): управляет статусом и тем, отдаёт ли `FakeSession` `entities` с `custom_emoji` за каждый `<tg-emoji>` в тексте; middleware и `DefaultBotProperties(parse_mode=HTML)` подключаются к боту харнеса как в проде. |
 | `AGENTS.md`, `CLAUDE.md`, `README.md` | Раздел «Эмодзи и иконки»: правило для агента, список поддерживаемых эмодзи, как добавить новый, как выключить. |
 | `.env.example` | `CUSTOM_EMOJI=auto`. |
 

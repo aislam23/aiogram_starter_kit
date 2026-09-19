@@ -53,7 +53,7 @@ https://t.me/addemoji/tgiosicons), причём так, чтобы:
 | `app/middlewares/custom_emoji.py` | `CustomEmojiMiddleware(BaseRequestMiddleware)` + объект состояния `custom_emoji_status`. Конвертация исходящих методов, детекция права, fallback, повторная попытка. |
 | `app/main.py` | `bot.session.middleware(CustomEmojiMiddleware())` при `settings.custom_emoji != "off"`. |
 | `app/config.py` | `CUSTOM_EMOJI=auto\|off` (по умолчанию `auto`). |
-| `app/handlers/admin/admin.py` | Строка в главном экране `/admin`: «Иконки: premium» / «Иконки: обычные эмодзи (Premium не активен, проверим снова через N ч)». |
+| `app/handlers/admin/admin.py` | Строка в главном экране `/admin`: «Иконки: premium» / «Иконки: обычные эмодзи (Premium не активен, проверим снова через N ч)» / «Иконки: выключены (CUSTOM_EMOJI=off)». |
 | `scripts/dump_emoji_pack.py`, `justfile`, `Makefile` | `just emoji-dump [pack]` — через `settings.bot_token` и `get_sticker_set` печатает `эмодзи → ID`. Токен не печатается. |
 | `requirements.txt` | `aiogram==3.31.0` (нужно поле `icon_custom_emoji_id`). |
 | `tests/harness.py` | `FakeSession` умеет режим `premium=True/False`: отдаёт `entities` с `custom_emoji` за каждый `<tg-emoji>` в тексте либо без них; middleware подключается к боту харнеса как в проде. |
@@ -77,8 +77,10 @@ https://t.me/addemoji/tgiosicons), причём так, чтобы:
 ```
 исходящий метод
   │
-  ├─ не Send*/Edit* с text/caption/reply_markup, или parse_mode не HTML,
-  │  или переданы явные entities → пропустить как есть
+  ├─ метод без полей text/caption/reply_markup (duck-typing по атрибутам, не список классов:
+  │  SendMessage, SendPhoto, SendAudio, SendVoice, EditMessageText, EditMessageCaption,
+  │  EditMessageReplyMarkup, …), или parse_mode не HTML, или переданы явные
+  │  entities / caption_entities → пропустить как есть
   │
   ├─ status.enabled?  ── нет → пропустить как есть (обычные эмодзи; раз в RETRY_AFTER — попробовать)
   │
@@ -87,11 +89,15 @@ https://t.me/addemoji/tgiosicons), причём так, чтобы:
   │       если после вырезания текст пуст — кнопка не трогается)
   │
   ├─ make_request(изменённый метод)
-  │      ├─ TelegramBadRequest → повторить make_request(ИСХОДНЫЙ метод) один раз:
+  │      ├─ TelegramBadRequest «message is not modified» → пробросить как есть, без повтора
+  │      │    (штатная ошибка шаблона: повторное нажатие, финальный отчёт = последний
+  │      │     прогресс; повтор исходным методом стёр бы иконки с экрана и дал бы ложный
+  │      │     disable при живом Premium)
+  │      ├─ иной TelegramBadRequest → повторить make_request(ИСХОДНЫЙ метод) один раз:
   │      │    повтор успешен → ошибку вызвало наше изменение → status.disable(reason)
   │      │    повтор тоже упал → пробросить исходную ошибку, статус не трогать
-  │      │    (никакого матчинга по словам в тексте ошибки: `can't parse entities`
-  │      │     из-за кривого HTML в хендлере не должен выключать иконки)
+  │      │    (другого матчинга по словам нет: `can't parse entities` из-за кривого
+  │      │     HTML в хендлере упадёт и на повторе и не выключит иконки)
   │      └─ успех: если мы вставили ≥1 <tg-emoji>, а в Message.entities /
   │           caption_entities нет ни одного type == "custom_emoji" → status.disable(reason)
   │
@@ -113,13 +119,17 @@ https://t.me/addemoji/tgiosicons), причём так, чтобы:
   кнопками: первое же текстовое сообщение с иконкой выявляет отсутствие права. Цена потери
   Premium — максимум один экран с кнопками без эмодзи (если сервер молча отбрасывает иконки) или
   один повторный запрос (если сервер отвечает ошибкой).
-- **Уведомление админам** при `disable`: один раз за период отключения, всем админам
-  (`settings.admin_user_ids` + `db.get_admins()`), фоновой задачей через `asyncio.create_task`;
-  ссылка на задачу хранится в статусе (иначе GC), тело обёрнуто в `try/except` на каждого
-  админа (`TelegramForbiddenError`, если админ заблокировал бота) — никаких «Task exception was
-  never retrieved». Сообщение проходит через тот же middleware, но флаг уже выключен — рекурсии
-  нет. Текст: «Иконки переключены на обычные эмодзи: Telegram не принял custom emoji. Обычно это
-  значит, что у владельца бота закончился Premium. Проверим снова через 24 ч». Лог — `warning`.
+- **Уведомление админам** при каждом `disable` (то есть не чаще раза в `RETRY_AFTER`, пока
+  Premium не вернулся — ежедневное напоминание осознанно), всем админам
+  (`settings.admin_user_ids` + `db.get_admins()`, сам вызов `db.get_admins()` тоже в
+  `try/except`), фоновой задачей через `asyncio.create_task`; ссылка на задачу хранится в статусе
+  (иначе GC), отправка каждому админу в `try/except` (`TelegramForbiddenError`, если админ
+  заблокировал бота) — никаких «Task exception was never retrieved». Сообщение проходит через
+  тот же middleware, но флаг уже выключен — рекурсии нет. Текст: «Иконки переключены на обычные
+  эмодзи: Telegram не принял custom emoji (`reason`). Обычно это значит, что у владельца бота
+  закончился Premium. Проверим снова через 24 ч». `reason` — «в ответе нет custom_emoji» либо
+  текст ошибки Telegram: если сломан ID в каталоге, владелец увидит настоящую причину.
+  Лог — `warning` с тем же `reason`.
 - **Повторная попытка при ошибке** — только один раз и только для методов, которые мы изменили.
 - **Ответ `True`** (редактирование inline-сообщения) — детекции нет, ничего не делаем.
 - **Рассылка** (`BroadcastService`) шлёт текст, который написал админ, с `parse_mode="HTML"` —
@@ -147,11 +157,14 @@ https://t.me/addemoji/tgiosicons), причём так, чтобы:
   счётчик изменённых кнопок.
 - Согласованность каталога: каждый ключ `EMOJI_TO_ICON` ссылается на существующий атрибут `Icons`,
   ID — строка из цифр, `SUPPORTED_EMOJI` совпадает с ключами.
-- Инвентарь: все эмодзи, встречающиеся в `app/keyboards/**` и `app/handlers/**` в строковых
-  литералах UI, есть в `EMOJI_TO_ICON` (список исключений — явный, в тесте).
+- Инвентарь: все эмодзи, встречающиеся в `app/keyboards/**`, `app/handlers/**` и
+  `app/services/**` в строковых литералах UI, есть в `EMOJI_TO_ICON` (список исключений —
+  явный, в тесте; эмодзи только из `logger.*`-вызовов не считаются).
 
 Тесты middleware через харнес `tests/test_custom_emoji.py`. Харнес — session-scoped singleton,
-статус — singleton процесса, поэтому режим задаётся явно и сбрасывается в `harness.reset()`:
+статус — singleton процесса, поэтому режим задаётся явно и сбрасывается в `harness.reset()`
+(сброс также отменяет незавершённую фоновую задачу уведомления, чтобы она не выполнилась после
+отката `monkeypatch` и не ушла в настоящий `db.get_admins()`):
 
 - `harness.premium("off")` — **по умолчанию и после `reset()`**: статус заранее выключен
   (`disabled_at = now`, уведомление помечено отправленным), сессия entities не отдаёт.

@@ -13,6 +13,8 @@ def setup_middlewares(dp: Dispatcher) -> None:
     Регистрируем как outer-middleware: они срабатывают на каждый апдейт,
     даже если ни один хендлер его не обработал. Внутренние (dp.message.middleware)
     запускаются только при совпадении с хендлером.
+
+    `CustomEmojiMiddleware` — session-middleware, подключается к `bot.session` в `app/main.py`.
     """
     # Middleware для логирования
     dp.message.outer_middleware(LoggingMiddleware())

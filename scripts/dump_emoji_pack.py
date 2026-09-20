@@ -38,7 +38,8 @@ async def dump(pack_name: str) -> int:
         print(NO_TOKEN_HINT, file=sys.stderr)
         return 1
     except Exception as e:
-        print(f"❌ Не удалось получить пак {pack_name}: {e}", file=sys.stderr)
+        # Страховка от утечки токена в тексте исключения (например, в URL запроса)
+        print(f"❌ Не удалось получить пак {pack_name}: {str(e).replace(settings.bot_token, '•••')}", file=sys.stderr)
         return 1
     if sticker_set.sticker_type != "custom_emoji":
         print(f"❌ {pack_name} — это не эмодзи-пак (тип: {sticker_set.sticker_type})", file=sys.stderr)

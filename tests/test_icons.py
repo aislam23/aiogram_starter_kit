@@ -155,7 +155,7 @@ def test_supported_emoji_are_all_mapped_and_unique():
 # ── инвентарь: эмодзи в UI-строках должны быть в каталоге ────────
 
 APP = Path(__file__).resolve().parent.parent / "app"
-SCAN_DIRS = ("keyboards", "handlers", "services")
+SCAN_DIRS = ("keyboards", "handlers", "services", "middlewares")
 # Emoji-подмножества юникода (Misc Symbols, Dingbats, Arrows, Geometric Shapes ◀️▶️, ‼️⁉️, ©️®️ и т.д.) —
 # чтобы ловить и те эмодзи, которых каталог не знает. Псевдографика (─ │ ● ■) намеренно не входит.
 ANY_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2100-\u214F\u231A-\u231B\u23E9-\u23F3\u23F8-\u23FA\u25AA-\u25AB\u25B6\u25C0\u25FB-\u25FE\u203C\u2049\u2190-\u21FF\u2934-\u2935\u00A9\u00AE]\ufe0f?")

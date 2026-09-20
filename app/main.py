@@ -18,7 +18,7 @@ from app.config import settings
 from app.database import db
 from app.handlers import setup_routers
 from app.middlewares import setup_middlewares
-from app.middlewares.custom_emoji import CustomEmojiMiddleware
+from app.middlewares.custom_emoji import CustomEmojiMiddleware, custom_emoji_status
 from app.services.liveness import liveness
 from app.utils import register_secret, setup_logging
 
@@ -65,7 +65,9 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
         session=session
     )
 
-    # Иконки из пака custom emoji во всех исходящих сообщениях (app/middlewares/custom_emoji.py)
+    # Иконки из пака custom emoji во всех исходящих сообщениях (app/middlewares/custom_emoji.py).
+    # Будущие session-middleware (например, логирование запросов) регистрировать ДО CustomEmojiMiddleware,
+    # чтобы видеть уже сконвертированный метод.
     if settings.custom_emoji != "off":
         bot.session.middleware(CustomEmojiMiddleware())
 
@@ -127,6 +129,9 @@ async def on_shutdown(bot: Bot) -> None:
         _liveness_scheduler_task.cancel()
         with suppress(asyncio.CancelledError):
             await _liveness_scheduler_task
+
+    # Уведомление админов об отключении иконок: после закрытия сессии оно всё равно не уйдёт
+    custom_emoji_status.cancel_notify()
 
     await bot.session.close()
 

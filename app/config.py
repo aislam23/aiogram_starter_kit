@@ -4,6 +4,7 @@
 import json
 from typing import Optional
 
+from loguru import logger
 from pydantic import Field, validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -107,8 +108,12 @@ class Settings(BaseSettings):
 
     @validator('custom_emoji')
     def normalize_custom_emoji(cls, v):
-        """auto | off, без учёта регистра; всё остальное считаем auto"""
-        return "off" if str(v).strip().lower() == "off" else "auto"
+        """auto | off, без учёта регистра; всё остальное считаем auto (с предупреждением в лог)"""
+        value = str(v).strip().lower()
+        if value not in ("auto", "off"):
+            logger.warning(f"CUSTOM_EMOJI={v!r} не распознано, использую auto")
+            return "auto"
+        return value
 
     def is_admin_username(self, username: Optional[str]) -> bool:
         """Есть ли username в списке админов (регистр и @ не важны)"""

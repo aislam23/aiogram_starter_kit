@@ -11,6 +11,10 @@ Session-middleware custom emoji: иконки из пака tgiosicons во вс
 По истечении RETRY_AFTER (или после рестарта) иконки пробуются снова — продление Premium
 подхватывается без вмешательства.
 
+Детекция глобальная: одно сообщение туда, где custom emoji не разрешены (канал,
+edit_message_text(inline_message_id=…)), выключит иконки на RETRY_AFTER для всех чатов.
+Для шаблона (личка, группы) неактуально — зафиксировано, чтобы не искать «пропавшие иконки».
+
 Ограничение: caption внутри InputMedia (SendMediaGroup, EditMessageMedia) и результаты
 AnswerInlineQuery не конвертируются — текст там лежит не в полях метода.
 """
@@ -100,7 +104,7 @@ async def notify_custom_emoji_off(bot: Bot, reason: str) -> None:
     text = (
         "⚠️ <b>Иконки переключены на обычные эмодзи</b>\n\n"
         f"Telegram не принял custom emoji ({reason}). Обычно это значит, что у владельца бота "
-        f"закончился Telegram Premium. Проверим снова через {hours} ч."
+        f"нет активного Telegram Premium. Проверим снова через {hours} ч."
     )
     await notify_admins(bot, text)
 

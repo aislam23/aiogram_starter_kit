@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     # Часовой пояс для расписаний и отчётов (IANA, например Europe/Moscow)
     timezone: str = Field("Europe/Moscow", alias="TIMEZONE")
 
+    # Custom emoji (app/ui/icons.py, app/middlewares/custom_emoji.py): auto — иконки из пака, если
+    # у владельца бота есть Telegram Premium, иначе обычные эмодзи; off — всегда обычные эмодзи
+    custom_emoji: str = Field("auto", alias="CUSTOM_EMOJI")
+
     # Проверка живых пользователей (app/services/liveness.py): раз в N дней ночью бот
     # шлёт sendChatAction каждому пользователю и помечает заблокировавших. 0 — только вручную из /admin
     liveness_check_interval_days: int = Field(7, alias="LIVENESS_CHECK_INTERVAL_DAYS")
@@ -100,6 +104,11 @@ class Settings(BaseSettings):
         except (json.JSONDecodeError, ValueError):
             items = v.split(',')
         return [normalize_username(x) for x in items if normalize_username(x)]
+
+    @validator('custom_emoji')
+    def normalize_custom_emoji(cls, v):
+        """auto | off, без учёта регистра; всё остальное считаем auto"""
+        return "off" if str(v).strip().lower() == "off" else "auto"
 
     def is_admin_username(self, username: Optional[str]) -> bool:
         """Есть ли username в списке админов (регистр и @ не важны)"""

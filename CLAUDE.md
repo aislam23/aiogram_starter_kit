@@ -17,6 +17,9 @@ every common task, and the rules about secrets. This file only lists what is Cla
 - Run `just check` after every code change (ruff + pytest + secrets scan, no Docker). Do not report a task
   as done while it is red.
 - Codebase language: Russian for comments, docstrings and user-facing messages; English identifiers.
+- Emoji in UI: only from `SUPPORTED_EMOJI` in `app/ui/icons.py`, written as plain unicode; the
+  middleware turns them into custom emoji icons. Never hand-write `<tg-emoji>` or `icon_custom_emoji_id`
+  (AGENTS.md §4.13).
 
 ## Quick reference
 
@@ -28,6 +31,7 @@ just doctor [--json]           # environment check
 just check                     # lint + tests + secrets
 just dev-d / just stop         # run / stop with Docker
 just logs-json 50              # read logs/bot.jsonl (masked)
+just emoji-dump [pack]         # emoji → custom_emoji_id of a pack (default tgiosicons)
 just rent-server [slug]        # where to rent a server; opens the author's partner link in the browser
 just set-server                # safe server entry (human-only step; needs `just venv` once)
 just deploy                    # deploy over SSH: Docker, upload, compose up, health

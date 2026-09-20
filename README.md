@@ -204,6 +204,7 @@ aiogram_starter_kit/
 │   │   ├── start.py             # Команда /start
 │   │   └── help.py              # Команды /help, /status
 │   ├── middlewares/             # Промежуточное ПО
+│   │   ├── custom_emoji.py      # Иконки custom emoji с fallback на обычные эмодзи
 │   │   ├── logging.py           # Логирование запросов
 │   │   └── user.py              # Автосохранение пользователей
 │   ├── database/                # Работа с БД
@@ -213,6 +214,7 @@ aiogram_starter_kit/
 │   ├── keyboards/               # Клавиатуры
 │   │   ├── admin.py             # Админские клавиатуры
 │   │   └── __init__.py          # Инициализация
+│   ├── ui/                      # Каталог иконок: `icons.py` (SUPPORTED_EMOJI)
 │   ├── services/                # Сервисы
 │   │   ├── broadcast.py         # Сервис рассылок
 │   │   └── __init__.py          # Инициализация
@@ -263,6 +265,7 @@ make dev          # Запуск среды разработки
 make dev-d        # Запуск в фоновом режиме
 make dev-tools    # Запуск с инструментами (pgAdmin)
 make stop         # Остановка разработки
+make emoji-dump   # Эмодзи → custom_emoji_id пака (PACK=tgiosicons); just emoji-dump [pack]
 ```
 
 ### Деплой на сервер
@@ -342,7 +345,17 @@ ENV=development
 
 # Logging
 LOG_LEVEL=INFO
+
+# Custom emoji: auto — иконки из пака, если у владельца бота есть Telegram Premium; off — обычные эмодзи
+CUSTOM_EMOJI=auto
 ```
+
+### 🎨 Иконки (custom emoji)
+
+Бот использует иконки из пака [tgiosicons](https://t.me/addemoji/tgiosicons) вместо обычных
+эмодзи — в текстах и кнопках. Для этого у владельца бота должен быть Telegram Premium. Если его
+нет (или он закончился), бот сам переходит на обычные эмодзи и сообщает об этом админам; когда
+Premium снова активен — иконки вернутся в течение суток. `CUSTOM_EMOJI=off` выключает иконки.
 
 ## 🗄️ База данных
 

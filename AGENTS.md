@@ -29,6 +29,7 @@
 | Middleware | `app/middlewares/` | Логирование, автосохранение пользователей, распознавание админов по username (outer) |
 | FSM | `app/states/` | `StatesGroup` для многошаговых сценариев; хранилище — Redis |
 | Клавиатуры | `app/keyboards/` | Inline-клавиатуры через `InlineKeyboardBuilder` |
+| Иконки | `app/ui/icons.py`, `app/middlewares/custom_emoji.py` | Custom emoji из пака tgiosicons: в коде — обычные эмодзи из `SUPPORTED_EMOJI`, middleware конвертирует на выходе; без Premium у владельца — обычные эмодзи автоматически |
 | Сервисы | `app/services/` | Логика, не зависящая от aiogram: `broadcast.py` (рассылка, `ProgressReporter`), `liveness.py` (проверка живых пользователей + ночной планировщик) |
 | БД | `app/database/` | SQLAlchemy async + asyncpg; `db` — синглтон с методами |
 | Миграции | `app/database/migrations/versions/` | Свои классы `Migration`, применяются при старте |
@@ -83,6 +84,7 @@ just logs-json 30                            # убедиться, что бот
 | `just server-logs [N]` / `just server-status` | логи и статус бота на сервере по SSH | нет |
 | `just logs-bot` | живые логи контейнера | да |
 | `just db-shell` | psql внутри контейнера | да |
+| `just emoji-dump [pack]` | «эмодзи → custom_emoji_id» пака (по умолчанию tgiosicons); нужен токен в `.env` | нет |
 
 Тест хендлера пишется так (`tests/harness.py` делает всё остальное):
 
@@ -215,6 +217,24 @@ async def test_button(harness, user):
 Сервисные UPDATE по `users` (пометка блокировки, результаты прогона) передают `updated_at=User.updated_at`,
 чтобы не подделывать «последнюю активность» пользователя. Делай так же в своих служебных обновлениях.
 
+### 4.13 Эмодзи и иконки
+
+В кнопках и текстах пиши **обычные эмодзи из списка `SUPPORTED_EMOJI`** в `app/ui/icons.py`.
+На выходе `CustomEmojiMiddleware` сам превратит их в иконки пака tgiosicons: в тексте — тег
+`<tg-emoji>` (fallback — исходный эмодзи), в inline-кнопке — `icon_custom_emoji_id`
+(эмодзи должен быть первым символом текста кнопки). Если у владельца нет Telegram Premium,
+Telegram иконки не примет — middleware это заметит и переключится на обычные эмодзи,
+админам придёт уведомление; через 24 ч попробует снова. Статус виден в `/admin`.
+
+- Нужен эмодзи, которого нет в списке: сначала возьми ближайший из списка. Если не подходит —
+  `just emoji-dump tgiosicons`, добавь ID в `Icons` и пару в `_CANONICAL` (`app/ui/icons.py`);
+  тест `test_all_ui_emoji_are_in_catalog` подскажет, что осталось вне каталога.
+- Не пиши `<tg-emoji>` и `icon_custom_emoji_id` руками.
+- Reply-клавиатуры (`KeyboardButton`), `answer_callback_query`, инвойсы — обычные эмодзи,
+  конвертации нет (текст reply-кнопки — это payload, который вернётся боту).
+- Кнопка из одного эмодзи (`◀️`) остаётся как есть: без текста Telegram кнопку отвергнет.
+- Выключить совсем: `CUSTOM_EMOJI=off` в `.env`.
+
 ## 5. Чего не делать
 
 - Не читать и не выводить `.env`, `.env.prod`, `logs/` целиком в чат. Токен — только маскированно.
@@ -226,6 +246,7 @@ async def test_button(harness, user):
 - Не менять `check_can_apply` уже применённых миграций.
 - Не отключать `IsAdmin()` и проверки прав «для отладки».
 - Не коммитить, пока `just check` красный.
+- Не использовать в UI эмодзи вне `SUPPORTED_EMOJI` (`app/ui/icons.py`) и не писать `<tg-emoji>` / `icon_custom_emoji_id` руками — см. §4.13.
 
 ## 6. Деплой на сервер
 

@@ -283,8 +283,8 @@ def test_supported_emoji_are_all_mapped_and_unique():
     assert len(SUPPORTED_EMOJI) == len(set(SUPPORTED_EMOJI))
     for emoji_char in SUPPORTED_EMOJI:
         assert emoji_char in EMOJI_TO_ICON
-        assert emoji_char.replace("️", "") in EMOJI_TO_ICON
-        assert emoji_char.replace("️", "") + "️" in EMOJI_TO_ICON
+        assert emoji_char.replace("\ufe0f", "") in EMOJI_TO_ICON
+        assert emoji_char.replace("\ufe0f", "") + "\ufe0f" in EMOJI_TO_ICON
 ```
 
 - [ ] **Step 2: Убедиться, что тесты падают**
@@ -414,7 +414,7 @@ _CANONICAL: dict[str, str] = {
     "🎂": Icons.CAKE,
 }
 
-_VS16 = "️"
+_VS16 = "\ufe0f"
 
 # Эмодзи, которые можно использовать в UI (канонический вид) — для документации и подсказок агенту
 SUPPORTED_EMOJI: tuple[str, ...] = tuple(_CANONICAL)

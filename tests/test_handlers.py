@@ -44,6 +44,21 @@ async def test_admin_panel_shows_stats_and_menu(harness, admin, fake_db):
     assert "📊 Рассылка" in buttons_of(replies[0])
 
 
+async def test_admin_panel_shows_custom_emoji_status(harness, admin, fake_db, monkeypatch):
+    from app.config import settings
+
+    replies = await harness.send_message("/admin", admin)
+    assert "Иконки: <b>обычные эмодзи</b>" in replies[0].text
+
+    harness.premium("on")
+    replies = await harness.send_message("/admin", admin)
+    assert "Иконки: <b>premium</b>" in replies[0].text
+
+    monkeypatch.setattr(settings, "custom_emoji", "off")
+    replies = await harness.send_message("/admin", admin)
+    assert "Иконки: <b>выключены</b> (CUSTOM_EMOJI=off)" in replies[0].text
+
+
 async def test_admin_broadcast_button_enters_fsm_state(harness, admin):
     await harness.send_callback("admin_broadcast", admin)
     assert await harness.state_of(admin) == "AdminStates:broadcast_message"

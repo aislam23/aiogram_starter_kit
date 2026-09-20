@@ -18,6 +18,7 @@ from app.config import settings
 from app.database import db
 from app.handlers import setup_routers
 from app.middlewares import setup_middlewares
+from app.middlewares.custom_emoji import CustomEmojiMiddleware
 from app.services.liveness import liveness
 from app.utils import register_secret, setup_logging
 
@@ -63,6 +64,10 @@ async def setup_bot() -> tuple[Bot, Dispatcher]:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
         session=session
     )
+
+    # Иконки из пака custom emoji во всех исходящих сообщениях (app/middlewares/custom_emoji.py)
+    if settings.custom_emoji != "off":
+        bot.session.middleware(CustomEmojiMiddleware())
 
     # Создаем хранилище состояний
     try:

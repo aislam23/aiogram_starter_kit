@@ -12,6 +12,7 @@ from loguru import logger
 from app.database import db
 from app.filters import IsAdmin
 from app.keyboards import AdminKeyboards
+from app.middlewares.custom_emoji import custom_emoji_status
 from app.services import BroadcastService, ProgressReporter
 from app.states import AdminStates
 
@@ -51,6 +52,7 @@ async def admin_command(message: Message, bot: Bot, is_admin: bool = False):
 
 async def admin_panel_text() -> str:
     """Текст главного экрана админки со статистикой (используется и для возврата «Назад»)"""
+    icons_label, icons_note = custom_emoji_status.describe()
     stats = await db.get_bot_stats()
     if not stats:
         stats = await db.update_bot_stats()
@@ -69,6 +71,7 @@ async def admin_panel_text() -> str:
 🚫 Заблокировали бота: <b>{blocked_users}</b>
 🟢 Статус: <b>{stats.status}</b>
 🕐 Последний запуск: <b>{last_restart}</b>
+⚙️ Иконки: <b>{icons_label}</b>{icons_note}
 
 Выберите действие:
 """

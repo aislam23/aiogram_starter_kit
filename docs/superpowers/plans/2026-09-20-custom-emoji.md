@@ -166,10 +166,6 @@ git commit -m "feat: just emoji-dump — выгрузка ID custom emoji из �
 """
 Тесты каталога custom emoji: чистые функции без Telegram и харнеса.
 """
-import ast
-import re
-from pathlib import Path
-
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 from app.ui.icons import (
@@ -533,13 +529,23 @@ git commit -m "feat(ui): каталог custom emoji tgiosicons, emojify и icon
 
 - [ ] **Step 1: Добавить тест**
 
+В начало файла (к остальным импортам, по порядку isort — stdlib выше aiogram):
+
+```python
+import ast
+import re
+from pathlib import Path
+```
+
+В конец файла:
+
 ```python
 # ── инвентарь: эмодзи в UI-строках должны быть в каталоге ────────
 
 APP = Path(__file__).resolve().parent.parent / "app"
 SCAN_DIRS = ("keyboards", "handlers", "services")
-# Общий регекс по диапазонам Emoji — чтобы ловить и те, которых каталог не знает
-ANY_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF☀-➿⬀-⯿℀-⅏⌀-⏿]️?")
+# Общий регекс по диапазонам Emoji (включая Geometric Shapes ◀️▶️) — чтобы ловить и те, которых каталог не знает
+ANY_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2100-\u214F\u2300-\u25FF]\ufe0f?")
 # Символы из этих диапазонов, которые эмодзи не являются или намеренно остаются обычными
 INVENTORY_EXCEPTIONS = {"№", "≈", "→"}
 
@@ -799,7 +805,7 @@ from aiogram.types import MessageEntity
 from app.middlewares.custom_emoji import CustomEmojiMiddleware, custom_emoji_status
 ```
 
-(`Callable` — в `typing`-импорт.)
+(`Callable` — в `typing`-импорт; `import re` — к stdlib-импортам. Порядок импортов — по isort, иначе ruff I001.)
 
 2. `FakeSession.__init__` — добавить поля:
 
@@ -940,17 +946,20 @@ git commit -m "test(harness): режимы Premium для custom emoji, entities
 
 - [ ] **Step 1: Падающие тесты middleware**
 
-Добавить в `tests/test_custom_emoji.py`:
+Добавить в `tests/test_custom_emoji.py`. Импорты — **в начало файла**, к существующим (порядок isort: stdlib, третьи, `app`):
 
 ```python
-import asyncio
-
+import pytest
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import SendMessage
+from aiogram.types import MessageEntity
 
 from app.ui.icons import Icons
-from tests.conftest import ADMIN_ID
+```
 
+Тесты — в конец файла:
+
+```python
 TG = '<tg-emoji emoji-id="{id}">{fallback}</tg-emoji>'
 
 
@@ -983,16 +992,17 @@ async def test_premium_lost_is_detected_and_admins_notified_once(harness, admin,
     assert harness.custom_emoji.enabled is False
     assert "custom_emoji" in harness.custom_emoji.reason
 
+    await harness.custom_emoji.notify_task
+    notices = [c for c in harness.calls if isinstance(c, SendMessage) and "Иконки переключены" in (c.text or "")]
+    assert len(notices) == 1 and notices[0].chat_id == admin.id
+    assert "<tg-emoji" not in notices[0].text  # уведомление тоже обычными эмодзи
+
     # Следующие сообщения — уже обычными эмодзи, без повторного уведомления
     harness.clear()
     replies = await harness.send_message("/admin", admin)
     assert "<tg-emoji" not in replies[0].text
     assert replies[0].reply_markup.inline_keyboard[0][0].text == "📊 Рассылка"
-
-    await harness.custom_emoji.notify_task
-    notices = [c for c in harness.calls if isinstance(c, SendMessage) and "Иконки переключены" in (c.text or "")]
-    assert len(notices) == 1 and notices[0].chat_id == ADMIN_ID
-    assert "<tg-emoji" not in notices[0].text  # уведомление тоже обычными эмодзи
+    assert not any("Иконки переключены" in (c.text or "") for c in harness.calls if isinstance(c, SendMessage))
 
 
 async def test_bad_request_on_icons_retries_plain_and_disables(harness, admin):
@@ -1013,9 +1023,10 @@ async def test_bad_request_on_icons_retries_plain_and_disables(harness, admin):
 async def test_bad_request_on_both_attempts_is_raised_and_keeps_status(harness, admin):
     harness.premium("on")
     harness.session.reject = lambda m: TelegramBadRequest(method=m, message="Bad Request: can't parse entities")
-    # Dispatcher ловит исключение хендлера и пишет в лог; бот ничего не отправил
-    replies = await harness.send_message("/admin", admin)
-    assert replies == []
+    # В проекте нет errors-хендлера: исключение хендлера вылетает из feed_update
+    with pytest.raises(TelegramBadRequest):
+        await harness.send_message("/admin", admin)
+    assert harness.sent == []
     assert harness.custom_emoji.enabled is True
 
 
@@ -1028,7 +1039,8 @@ async def test_not_modified_is_not_retried(harness, admin):
         return TelegramBadRequest(method=method, message="Bad Request: message is not modified")
 
     harness.session.reject = reject_all
-    await harness.send_message("/admin", admin)
+    with pytest.raises(TelegramBadRequest):
+        await harness.send_message("/admin", admin)
     assert len(calls) == 1  # без повтора
     assert harness.custom_emoji.enabled is True
 
@@ -1036,7 +1048,7 @@ async def test_not_modified_is_not_retried(harness, admin):
 async def test_markdown_or_explicit_entities_are_not_converted(harness):
     harness.premium("on")
     await harness.bot.send_message(1, "✅ md", parse_mode="Markdown")
-    await harness.bot.send_message(1, "✅ ent", entities=[], parse_mode=None)
+    await harness.bot.send_message(1, "✅ ent", entities=[MessageEntity(type="bold", offset=0, length=1)])
     texts = [c.text for c in harness.calls if isinstance(c, SendMessage)]
     assert texts == ["✅ md", "✅ ent"]
 
@@ -1048,8 +1060,6 @@ async def test_retry_period_reenables_conversion(harness, admin):
     replies = await harness.send_message("/admin", admin)
     assert "<tg-emoji" in replies[0].text
 ```
-
-Примечание к `test_bad_request_on_both_attempts…`: aiogram при исключении в хендлере пробрасывает его из `feed_update`, если нет `dp.errors()`-обработчика. Если тест падает с `TelegramBadRequest` наружу — обернуть вызов в `pytest.raises(TelegramBadRequest)` и оставить проверку `enabled is True`; это тоже соответствует спеке («пробросить исходную ошибку»).
 
 - [ ] **Step 2: Убедиться, что падают**
 
@@ -1074,7 +1084,8 @@ def _resolve_parse_mode(bot: Bot, method: TelegramMethod) -> Optional[str]:
     value = getattr(method, "parse_mode", None)
     if isinstance(value, Default):
         value = bot.default.parse_mode
-    return str(value).upper() if isinstance(value, str) else None
+    # ParseMode — str-Enum: value.upper() даёт "HTML", а str(value) дал бы "ParseMode.HTML"
+    return value.upper() if isinstance(value, str) else None
 
 
 def _convert(bot: Bot, method: TelegramMethod) -> tuple[Optional[TelegramMethod], bool]:
@@ -1131,8 +1142,11 @@ class CustomEmojiMiddleware(BaseRequestMiddleware):
             if "message is not modified" in e.message:
                 # Штатная ошибка (повторное нажатие, тот же прогресс): повтор стёр бы иконки с экрана
                 raise
-            # Повтор исходным методом: упадёт и он — ошибка не наша, пробрасываем как есть
-            result = await make_request(bot, method)
+            # Повтор исходным методом: упадёт и он — ошибка не наша, пробрасываем первую
+            try:
+                result = await make_request(bot, method)
+            except TelegramBadRequest:
+                raise e from None
             custom_emoji_status.disable(f"Telegram отверг сообщение с иконками: {e.message}", bot)
             return result
 
@@ -1182,7 +1196,7 @@ async def test_admin_panel_shows_custom_emoji_status(harness, admin, fake_db, mo
 
     monkeypatch.setattr(settings, "custom_emoji", "off")
     replies = await harness.send_message("/admin", admin)
-    assert "выключены (CUSTOM_EMOJI=off)" in replies[0].text
+    assert "Иконки: <b>выключены</b> (CUSTOM_EMOJI=off)" in replies[0].text
 ```
 
 Run: `.venv/bin/python -m pytest tests/test_handlers.py::test_admin_panel_shows_custom_emoji_status -q` → FAIL (строки нет).

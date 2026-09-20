@@ -56,12 +56,38 @@ def test_emojify_replaces_substitute_icons_but_keeps_original_fallback():
     assert emojify("🩺 Проверка") == TG.format(id=Icons.HEALTH, fallback="🩺") + " Проверка"
 
 
+def test_emojify_empty_and_plain_text_unchanged():
+    assert emojify("") == ""
+    assert emojify("Просто текст без эмодзи") == "Просто текст без эмодзи"
+
+
+def test_emojify_handles_trailing_and_adjacent_emoji():
+    check = TG.format(id=Icons.CHECK, fallback="✅")
+    assert emojify("Готово ✅") == "Готово " + check
+    assert emojify("✅✅") == check + check
+
+
+def test_emojify_converts_emoji_adjacent_to_tag_and_keeps_tag():
+    assert emojify("✅<b>x</b>") == TG.format(id=Icons.CHECK, fallback="✅") + "<b>x</b>"
+
+
+def test_emojify_does_not_touch_emoji_inside_tag_attributes():
+    text = '<a href="https://x.com/📊">📊 link</a>'
+    result = emojify(text)
+    assert result.startswith('<a href="https://x.com/📊">')
+    assert result == '<a href="https://x.com/📊">' + TG.format(id=Icons.STATS, fallback="📊") + " link</a>"
+
+
 # ── strip_leading_emoji / iconify_markup ─────────────────────────
 
 
 def test_strip_leading_emoji_returns_rest_and_emoji():
     assert strip_leading_emoji("📊 Рассылка") == ("Рассылка", "📊")
     assert strip_leading_emoji("⬅️Назад") == ("Назад", "⬅️")
+
+
+def test_strip_leading_emoji_removes_only_first_emoji():
+    assert strip_leading_emoji("✅✅ x") == ("✅ x", "✅")
 
 
 def test_strip_leading_emoji_ignores_unknown_or_non_leading():
@@ -130,10 +156,19 @@ def test_supported_emoji_are_all_mapped_and_unique():
 
 APP = Path(__file__).resolve().parent.parent / "app"
 SCAN_DIRS = ("keyboards", "handlers", "services")
-# Общий регекс по диапазонам Emoji (включая Geometric Shapes ◀️▶️) — чтобы ловить и те, которых каталог не знает
-ANY_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2100-\u214F\u2300-\u25FF]\ufe0f?")
-# Символы из этих диапазонов, которые эмодзи не являются или намеренно остаются обычными
-INVENTORY_EXCEPTIONS = {"№", "≈", "→"}
+# Emoji-подмножества юникода (Misc Symbols, Dingbats, Arrows, Geometric Shapes ◀️▶️, ‼️⁉️, ©️®️ и т.д.) —
+# чтобы ловить и те эмодзи, которых каталог не знает. Псевдографика (─ │ ● ■) намеренно не входит.
+ANY_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2100-\u214F\u231A-\u231B\u23E9-\u23F3\u23F8-\u23FA\u25AA-\u25AB\u25B6\u25C0\u25FB-\u25FE\u203C\u2049\u2190-\u21FF\u2934-\u2935\u00A9\u00AE]\ufe0f?")
+# Символы, которые регекс реально ловит, но эмодзи не являются или намеренно остаются обычными.
+# Сюда попадают только те, что матчатся ANY_EMOJI_RE (см. test_inventory_exceptions_are_matched_by_regex).
+INVENTORY_EXCEPTIONS = {"№", "→"}
+
+
+def _root_name(node: ast.AST) -> str | None:
+    """Имя в корне цепочки вызовов/атрибутов: logger.opt(...).error → "logger" """
+    while isinstance(node, (ast.Attribute, ast.Call)):
+        node = node.func if isinstance(node, ast.Call) else node.value
+    return node.id if isinstance(node, ast.Name) else None
 
 
 def _ui_strings(path: Path):
@@ -141,9 +176,8 @@ def _ui_strings(path: Path):
     tree = ast.parse(path.read_text(encoding="utf-8"))
     logged: set[int] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            if isinstance(node.func.value, ast.Name) and node.func.value.id == "logger":
-                logged.update(id(n) for n in ast.walk(node))
+        if isinstance(node, ast.Call) and _root_name(node.func) == "logger":
+            logged.update(id(n) for n in ast.walk(node))
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in logged:
             yield node.value
@@ -159,3 +193,29 @@ def test_all_ui_emoji_are_in_catalog():
                         continue
                     unknown.setdefault(found, set()).add(str(path.relative_to(APP)))
     assert not unknown, f"эмодзи вне каталога app/ui/icons.py: {unknown}"
+
+
+def test_inventory_regex_matches_emoji_but_not_pseudographics():
+    assert ANY_EMOJI_RE.findall("‼️ ⁉️ ↔️ ↩️ ⤴️ ©️ ®️ ◀️ ▶️ ⏹ ⏰") == [
+        "‼️", "⁉️", "↔️", "↩️", "⤴️", "©️", "®️", "◀️", "▶️", "⏹", "⏰",
+    ]
+    assert ANY_EMOJI_RE.findall("─ │ ● ■ ◆ ▓ ① ⌘") == []
+
+
+def test_inventory_exceptions_are_matched_by_regex():
+    # мёртвые записи (которые регекс не ловит) бессмысленны — их не должно быть
+    for symbol in INVENTORY_EXCEPTIONS:
+        assert ANY_EMOJI_RE.fullmatch(symbol), symbol
+
+
+def test_ui_strings_skip_logger_chains(tmp_path: Path):
+    source = (
+        "def f():\n"
+        "    logger.info('🍳 лог')\n"
+        "    logger.opt(exception=e).error('🍳 лог с opt')\n"
+        "    return '🍳 ui'\n"
+    )
+    path = tmp_path / "m.py"
+    path.write_text(source, encoding="utf-8")
+    assert list(_ui_strings(path)) == ["🍳 ui"]
+

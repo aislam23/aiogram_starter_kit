@@ -12,9 +12,11 @@
 ID выгружаются командой `just emoji-dump tgiosicons`.
 """
 import re
-from typing import Optional
+from typing import Optional, TypeVar
 
 from aiogram.types import InlineKeyboardMarkup
+
+M = TypeVar("M")
 
 
 class Icons:
@@ -130,9 +132,10 @@ EMOJI_TO_ICON: dict[str, str] = _with_variants(_CANONICAL)
 # Длинные варианты (с VS16) должны матчиться раньше коротких
 _EMOJI_RE = re.compile("|".join(sorted(map(re.escape, EMOJI_TO_ICON), key=len, reverse=True)))
 
-# Фрагменты, внутри которых эмодзи не трогаем: уже сконвертированные теги и моноширинные блоки
+# Фрагменты, внутри которых эмодзи не трогаем: уже сконвертированные теги, моноширинные блоки
+# и сами теги целиком (эмодзи в атрибутах, например в href, сломал бы разметку)
 _PROTECTED_RE = re.compile(
-    r"<tg-emoji\s[^>]*>.*?</tg-emoji>|<(pre|code)(?:\s[^>]*)?>.*?</\1>",
+    r"<tg-emoji\s[^>]*>.*?</tg-emoji>|<(pre|code)(?:\s[^>]*)?>.*?</\1>|<[^>]+>",
     re.DOTALL | re.IGNORECASE,
 )
 
@@ -166,7 +169,10 @@ def emojify(text: str) -> str:
 
 
 def strip_leading_emoji(text: str) -> tuple[str, Optional[str]]:
-    """(текст без ведущего эмодзи, сам эмодзи) или (текст, None), если эмодзи нет или текст без него пуст"""
+    """(текст без ведущего эмодзи, сам эмодзи) или (текст, None), если эмодзи нет или текст без него пуст.
+
+    Снимается только первый эмодзи: "✅✅ x" → ("✅ x", "✅").
+    """
     m = _LEADING_EMOJI_RE.match(text)
     if not m:
         return text, None
@@ -176,7 +182,7 @@ def strip_leading_emoji(text: str) -> tuple[str, Optional[str]]:
     return rest, m.group(1)
 
 
-def iconify_markup(markup: object) -> tuple[object, int]:
+def iconify_markup(markup: M) -> tuple[M, int]:
     """Переносит ведущий эмодзи inline-кнопок в icon_custom_emoji_id.
 
     Возвращает (новая клавиатура, сколько кнопок изменено). Reply-клавиатуры и кнопки с уже

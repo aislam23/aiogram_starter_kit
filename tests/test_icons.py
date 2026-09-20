@@ -1,6 +1,10 @@
 """
 Тесты каталога custom emoji: чистые функции без Telegram и харнеса.
 """
+import ast
+import re
+from pathlib import Path
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 from app.ui.icons import (
@@ -120,3 +124,38 @@ def test_supported_emoji_are_all_mapped_and_unique():
         assert emoji_char in EMOJI_TO_ICON
         assert emoji_char.replace("\ufe0f", "") in EMOJI_TO_ICON
         assert emoji_char.replace("\ufe0f", "") + "\ufe0f" in EMOJI_TO_ICON
+
+
+# ── инвентарь: эмодзи в UI-строках должны быть в каталоге ────────
+
+APP = Path(__file__).resolve().parent.parent / "app"
+SCAN_DIRS = ("keyboards", "handlers", "services")
+# Общий регекс по диапазонам Emoji (включая Geometric Shapes ◀️▶️) — чтобы ловить и те, которых каталог не знает
+ANY_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2100-\u214F\u2300-\u25FF]\ufe0f?")
+# Символы из этих диапазонов, которые эмодзи не являются или намеренно остаются обычными
+INVENTORY_EXCEPTIONS = {"№", "≈", "→"}
+
+
+def _ui_strings(path: Path):
+    """Строковые литералы файла, кроме тех, что внутри вызовов logger.* (логи — не UI)"""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    logged: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "logger":
+                logged.update(id(n) for n in ast.walk(node))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in logged:
+            yield node.value
+
+
+def test_all_ui_emoji_are_in_catalog():
+    unknown: dict[str, set[str]] = {}
+    for sub in SCAN_DIRS:
+        for path in (APP / sub).rglob("*.py"):
+            for text in _ui_strings(path):
+                for found in ANY_EMOJI_RE.findall(text):
+                    if found in EMOJI_TO_ICON or found in INVENTORY_EXCEPTIONS:
+                        continue
+                    unknown.setdefault(found, set()).add(str(path.relative_to(APP)))
+    assert not unknown, f"эмодзи вне каталога app/ui/icons.py: {unknown}"

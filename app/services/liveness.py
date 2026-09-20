@@ -22,6 +22,7 @@ from loguru import logger
 
 from app.config import settings
 from app.database import db
+from app.services.admins import notify_admins
 
 BATCH_SIZE = 500                 # пользователей на одну транзакцию записи результатов
 PROGRESS_EVERY_SECONDS = 5       # не чаще — колбэк прогресса (он редактирует сообщение админа)
@@ -304,17 +305,7 @@ class LivenessService:
 
     async def _notify_admins(self, result: LivenessProgress, cancelled: bool) -> None:
         """Итог автопрогона — всем админам: из настроек и назначенным через бота"""
-        text = format_result(result, cancelled, scheduled=True)
-        admin_ids = set(settings.admin_user_ids)
-        try:
-            admin_ids.update(admin.id for admin in await db.get_admins())
-        except Exception as e:
-            logger.warning(f"Не удалось получить список админов из базы: {e}")
-        for admin_id in sorted(admin_ids):
-            try:
-                await self.bot.send_message(admin_id, text)
-            except Exception as e:
-                logger.warning(f"Не удалось отправить итог проверки админу {admin_id}: {e}")
+        await notify_admins(self.bot, format_result(result, cancelled, scheduled=True))
 
 
 def format_result(result: LivenessProgress, cancelled: bool, scheduled: bool = False) -> str:

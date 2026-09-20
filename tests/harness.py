@@ -48,7 +48,7 @@ from aiogram.types import (
 
 from app.handlers import setup_routers
 from app.middlewares import setup_middlewares
-from app.middlewares.custom_emoji import CustomEmojiMiddleware, custom_emoji_status
+from app.middlewares.custom_emoji import CustomEmojiMiddleware, CustomEmojiStatus, custom_emoji_status
 
 BOT_USER = User(id=42, is_bot=True, first_name="TestBot", username="test_bot")
 
@@ -56,7 +56,10 @@ _TG_EMOJI_RE = re.compile(r'<tg-emoji emoji-id="(\d+)">')
 
 
 def custom_emoji_entities(text: Optional[str]) -> Optional[List[MessageEntity]]:
-    """Как Telegram: по одной custom_emoji entity на каждый <tg-emoji> в тексте"""
+    """Как Telegram: по одной custom_emoji entity на каждый <tg-emoji> в тексте.
+
+    offset/length фиктивные — middleware проверяет только `type`.
+    """
     if not text:
         return None
     entities = [
@@ -75,7 +78,8 @@ class FakeSession(BaseSession):
         self._message_id = 1000
         # Режим custom emoji: отдавать ли custom_emoji entities за <tg-emoji> в тексте (Premium активен)
         self.premium_entities = False
-        # Хук отказа: функция(method) -> исключение или None; None — запрос проходит
+        # Хук отказа: функция(method) -> исключение или None; None — запрос проходит.
+        # Отвергнутые вызовы в `calls`/`sent` не попадают
         self.reject: Optional[Callable[[TelegramMethod[Any]], Optional[Exception]]] = None
 
     async def close(self) -> None:
@@ -123,6 +127,18 @@ class FakeSession(BaseSession):
                 text=getattr(method, "text", None),
                 entities=custom_emoji_entities(getattr(method, "text", None)) if self.premium_entities else None,
                 reply_markup=method.reply_markup,
+            )
+        if hasattr(method, "caption"):
+            # Медиа с подписью (SendPhoto, SendDocument, ...): нужно для детекции по caption_entities
+            self._message_id += 1
+            return Message(
+                message_id=self._message_id,
+                date=datetime.now(UTC),
+                chat=Chat(id=getattr(method, "chat_id", None) or 0, type="private"),
+                from_user=BOT_USER,
+                caption=method.caption,
+                caption_entities=custom_emoji_entities(method.caption) if self.premium_entities else None,
+                reply_markup=method.reply_markup if isinstance(method.reply_markup, InlineKeyboardMarkup) else None,
             )
         if isinstance(method, AnswerCallbackQuery):
             return True
@@ -190,7 +206,7 @@ class BotHarness:
             custom_emoji_status.disabled_at = datetime.now(UTC)
 
     @property
-    def custom_emoji(self):
+    def custom_emoji(self) -> CustomEmojiStatus:
         """Состояние custom emoji (для проверок в тестах)"""
         return custom_emoji_status
 

@@ -1,13 +1,16 @@
 """
 Тесты custom emoji: состояние (без Telegram) и middleware (через харнес).
 """
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import SendMessage
+from aiogram.methods import SendMessage, SendPhoto
 from aiogram.types import MessageEntity
+from loguru import logger
 
+from app.middlewares import custom_emoji
 from app.middlewares.custom_emoji import RETRY_AFTER, CustomEmojiStatus
 from app.ui.icons import Icons
 
@@ -75,7 +78,7 @@ async def test_premium_off_leaves_everything_plain(harness, admin):
     assert _icons_of(msg) == [None] * len(_icons_of(msg))
 
 
-async def test_premium_lost_is_detected_and_admins_notified_once(harness, admin, fake_db):
+async def test_premium_lost_is_detected_and_admins_notified_once(harness, admin):
     harness.premium("lost")
     await harness.send_message("/admin", admin)
     assert harness.custom_emoji.enabled is False
@@ -148,3 +151,41 @@ async def test_retry_period_reenables_conversion(harness, admin):
     harness.custom_emoji.disabled_at = datetime.now(UTC) - RETRY_AFTER - timedelta(seconds=1)
     replies = await harness.send_message("/admin", admin)
     assert "<tg-emoji" in replies[0].text
+
+
+async def test_premium_on_converts_caption_and_keeps_status(harness):
+    harness.premium("on")
+    await harness.bot.send_photo(1, "file_id", caption="✅ Подпись")
+    photo = next(c for c in harness.calls if isinstance(c, SendPhoto))
+    assert "<tg-emoji" in photo.caption
+    assert harness.custom_emoji.enabled is True
+
+
+async def test_premium_lost_detected_on_caption(harness, admin):
+    harness.premium("lost")
+    await harness.bot.send_photo(1, "file_id", caption="✅ Подпись")
+    assert harness.custom_emoji.enabled is False
+    assert "custom_emoji" in harness.custom_emoji.reason
+    await harness.custom_emoji.notify_task
+    notices = [c for c in harness.calls if isinstance(c, SendMessage) and "Иконки переключены" in (c.text or "")]
+    assert len(notices) == 1 and notices[0].chat_id == admin.id
+
+
+async def test_notify_task_failure_is_logged_not_leaked(harness, monkeypatch):
+    async def broken_notify(bot, text):
+        raise RuntimeError("упало")
+
+    monkeypatch.setattr(custom_emoji, "notify_admins", broken_notify)
+    records = []
+    sink_id = logger.add(lambda m: records.append(m.record), level="ERROR")
+    try:
+        harness.premium("on")
+        assert harness.custom_emoji.disable("x", bot=harness.bot) is True
+        task = harness.custom_emoji.notify_task
+        await asyncio.wait([task])  # не await task — он перебросил бы исключение
+    finally:
+        logger.remove(sink_id)
+    assert isinstance(task.exception(), RuntimeError)
+    # done-callback забрал исключение и залогировал его — asyncio не пожалуется при GC
+    errors = [r for r in records if "Уведомление админов о custom emoji упало" in r["message"]]
+    assert len(errors) == 1 and errors[0]["exception"].type is RuntimeError

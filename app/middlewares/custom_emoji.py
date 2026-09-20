@@ -10,6 +10,9 @@ Session-middleware custom emoji: иконки из пака tgiosicons во вс
 статус выключается на RETRY_AFTER, бот шлёт обычные эмодзи, админам уходит уведомление.
 По истечении RETRY_AFTER (или после рестарта) иконки пробуются снова — продление Premium
 подхватывается без вмешательства.
+
+Ограничение: caption внутри InputMedia (SendMediaGroup, EditMessageMedia) и результаты
+AnswerInlineQuery не конвертируются — текст там лежит не в полях метода.
 """
 import asyncio
 from datetime import UTC, datetime, timedelta
@@ -25,7 +28,7 @@ from aiogram.types import InlineKeyboardMarkup, Message
 from loguru import logger
 
 from app.config import settings
-from app.database import db
+from app.services.admins import notify_admins
 from app.ui.icons import emojify, iconify_markup
 
 RETRY_AFTER = timedelta(hours=24)
@@ -58,7 +61,8 @@ class CustomEmojiStatus:
         self.reason = reason
         logger.warning(f"Custom emoji выключены на {RETRY_AFTER}: {reason}")
         if bot is not None:
-            self.notify_task = asyncio.create_task(notify_admins(bot, reason), name="custom-emoji-notify")
+            self.notify_task = asyncio.create_task(notify_custom_emoji_off(bot, reason), name="custom-emoji-notify")
+            self.notify_task.add_done_callback(_log_notify_outcome)
         return True
 
     def cancel_notify(self) -> None:
@@ -84,24 +88,21 @@ class CustomEmojiStatus:
 custom_emoji_status = CustomEmojiStatus()
 
 
-async def notify_admins(bot: Bot, reason: str) -> None:
-    """Сообщить админам (из настроек и назначенным через бота), что иконки выключены"""
+def _log_notify_outcome(task: asyncio.Task) -> None:
+    """Забираем исключение фоновой задачи, иначе asyncio пожалуется в лог при GC"""
+    if not task.cancelled() and task.exception() is not None:
+        logger.opt(exception=task.exception()).error("Уведомление админов о custom emoji упало")
+
+
+async def notify_custom_emoji_off(bot: Bot, reason: str) -> None:
+    """Сообщить админам, что иконки выключены и почему"""
     hours = int(RETRY_AFTER.total_seconds() // 3600)
     text = (
         "⚠️ <b>Иконки переключены на обычные эмодзи</b>\n\n"
         f"Telegram не принял custom emoji ({reason}). Обычно это значит, что у владельца бота "
         f"закончился Telegram Premium. Проверим снова через {hours} ч."
     )
-    admin_ids = set(settings.admin_user_ids)
-    try:
-        admin_ids.update(admin.id for admin in await db.get_admins())
-    except Exception as e:
-        logger.warning(f"Не удалось получить список админов из базы: {e}")
-    for admin_id in sorted(admin_ids):
-        try:
-            await bot.send_message(admin_id, text)
-        except Exception as e:
-            logger.warning(f"Не удалось уведомить админа {admin_id} о custom emoji: {e}")
+    await notify_admins(bot, text)
 
 
 def _resolve_parse_mode(bot: Bot, method: TelegramMethod) -> Optional[str]:
@@ -167,7 +168,8 @@ class CustomEmojiMiddleware(BaseRequestMiddleware):
             if "message is not modified" in e.message:
                 # Штатная ошибка (повторное нажатие, тот же прогресс): повтор стёр бы иконки с экрана
                 raise
-            # Повтор исходным методом: упадёт и он — ошибка не наша, пробрасываем первую
+            # Повтор исходным методом: упадёт и он — ошибка не наша, пробрасываем первую.
+            # Цена: 2 запроса на каждую 400 при включённых иконках — принято в спеке
             try:
                 result = await make_request(bot, method)
             except TelegramBadRequest:

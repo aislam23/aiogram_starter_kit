@@ -450,6 +450,10 @@ test-docker: check-docker
 logs-json n="50":
     @tail -n {{n}} logs/bot.jsonl 2>/dev/null || echo "logs/bot.jsonl not found — bot has not started yet"
 
+# Print «emoji → custom_emoji_id» of a Telegram emoji pack (usage: just emoji-dump tgiosicons)
+emoji-dump pack="tgiosicons":
+    @{{venv_python}} scripts/dump_emoji_pack.py {{pack}}
+
 # ═══════════════════════════════════════════════════════════════
 #                   DATABASE OPERATIONS
 # ═══════════════════════════════════════════════════════════════

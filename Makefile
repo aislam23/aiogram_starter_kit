@@ -311,6 +311,9 @@ lint: ## Lint with ruff
 
 check: lint test check-secrets ## ✅ Lint + tests + secrets scan (no Docker)
 
+emoji-dump: _check-python ## 🎨 Print «emoji → custom_emoji_id» of a pack (PACK=tgiosicons)
+	@$(VENV_PYTHON) scripts/dump_emoji_pack.py $(or $(PACK),tgiosicons)
+
 setup-remote-repo: _check-git ## Add remote repository to existing project
 	@echo "$(BLUE)📡 Setting up remote repository...$(NC)"
 	@read -p "Enter remote repository URL: " repo_url; \

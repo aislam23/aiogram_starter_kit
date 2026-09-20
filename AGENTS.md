@@ -37,7 +37,7 @@
 | Скрипты | `scripts/` | `init_project.py`, `set_token.py`, `doctor.py`, `check_secrets.py` |
 | Деплой | `scripts/` | `providers.py` (где арендовать), `set_server.py` (подключить сервер), `remote_deploy.py` (деплой по SSH), `github_secrets.py` (секреты в GitHub) |
 
-Стек: Python 3.11, aiogram 3.20, PostgreSQL 15, Redis 7, Docker Compose. Parse mode по умолчанию — HTML.
+Стек: Python 3.11, aiogram 3.31, PostgreSQL 15, Redis 7, Docker Compose. Parse mode по умолчанию — HTML.
 
 ## 2. Сценарий «новый бот с нуля»
 

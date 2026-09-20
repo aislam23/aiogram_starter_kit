@@ -16,6 +16,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 from aiogram import Bot
+from aiogram.client.session.middlewares.base import BaseRequestMiddleware, NextRequestMiddlewareType
+from aiogram.methods import TelegramMethod
+from aiogram.methods.base import Response, TelegramType
 from loguru import logger
 
 from app.config import settings
@@ -95,3 +98,15 @@ async def notify_admins(bot: Bot, reason: str) -> None:
             await bot.send_message(admin_id, text)
         except Exception as e:
             logger.warning(f"Не удалось уведомить админа {admin_id} о custom emoji: {e}")
+
+
+class CustomEmojiMiddleware(BaseRequestMiddleware):
+    """Подменяет юникод-эмодзи на custom emoji во всех исходящих сообщениях"""
+
+    async def __call__(
+        self,
+        make_request: NextRequestMiddlewareType[TelegramType],
+        bot: Bot,
+        method: TelegramMethod[TelegramType],
+    ) -> Response[TelegramType]:
+        return await make_request(bot, method)

@@ -167,7 +167,9 @@ def _harness_singleton() -> BotHarness:
 def harness(fake_db, _harness_singleton) -> BotHarness:
     """Dispatcher + Bot с фейковой сессией. База уже подменена, состояние чистое."""
     _harness_singleton.reset()
-    return _harness_singleton
+    yield _harness_singleton
+    # Фоновое уведомление админов о custom emoji не должно пережить откат fake_db
+    _harness_singleton.custom_emoji.cancel_notify()
 
 
 @pytest.fixture

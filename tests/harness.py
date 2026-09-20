@@ -14,11 +14,14 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
-from typing import Any, AsyncGenerator, List, Optional
+from typing import Any, AsyncGenerator, Callable, List, Optional
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.base import BaseSession
+from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.methods import (
     AnswerCallbackQuery,
@@ -37,6 +40,7 @@ from aiogram.types import (
     ChatMemberUpdated,
     InlineKeyboardMarkup,
     Message,
+    MessageEntity,
     TelegramObject,
     Update,
     User,
@@ -44,8 +48,22 @@ from aiogram.types import (
 
 from app.handlers import setup_routers
 from app.middlewares import setup_middlewares
+from app.middlewares.custom_emoji import CustomEmojiMiddleware, custom_emoji_status
 
 BOT_USER = User(id=42, is_bot=True, first_name="TestBot", username="test_bot")
+
+_TG_EMOJI_RE = re.compile(r'<tg-emoji emoji-id="(\d+)">')
+
+
+def custom_emoji_entities(text: Optional[str]) -> Optional[List[MessageEntity]]:
+    """Как Telegram: по одной custom_emoji entity на каждый <tg-emoji> в тексте"""
+    if not text:
+        return None
+    entities = [
+        MessageEntity(type="custom_emoji", offset=i, length=2, custom_emoji_id=m.group(1))
+        for i, m in enumerate(_TG_EMOJI_RE.finditer(text))
+    ]
+    return entities or None
 
 
 class FakeSession(BaseSession):
@@ -55,6 +73,10 @@ class FakeSession(BaseSession):
         super().__init__()
         self.calls: List[TelegramMethod[Any]] = []
         self._message_id = 1000
+        # Режим custom emoji: отдавать ли custom_emoji entities за <tg-emoji> в тексте (Premium активен)
+        self.premium_entities = False
+        # Хук отказа: функция(method) -> исключение или None; None — запрос проходит
+        self.reject: Optional[Callable[[TelegramMethod[Any]], Optional[Exception]]] = None
 
     async def close(self) -> None:
         pass
@@ -65,6 +87,10 @@ class FakeSession(BaseSession):
     async def make_request(
         self, bot: Bot, method: TelegramMethod[TelegramType], timeout: Optional[int] = None
     ) -> TelegramType:
+        if self.reject is not None:
+            exc = self.reject(method)
+            if exc is not None:
+                raise exc
         self.calls.append(method)
         result = self._fake_response(method)
         # Реальный aiogram привязывает объекты ответа к боту, чтобы работали
@@ -84,6 +110,7 @@ class FakeSession(BaseSession):
                 chat=Chat(id=method.chat_id, type="private"),
                 from_user=BOT_USER,
                 text=method.text,
+                entities=custom_emoji_entities(method.text) if self.premium_entities else None,
                 # В Message.reply_markup Telegram кладёт только inline-клавиатуру
                 reply_markup=method.reply_markup if isinstance(method.reply_markup, InlineKeyboardMarkup) else None,
             )
@@ -94,6 +121,7 @@ class FakeSession(BaseSession):
                 chat=Chat(id=method.chat_id or 0, type="private"),
                 from_user=BOT_USER,
                 text=getattr(method, "text", None),
+                entities=custom_emoji_entities(getattr(method, "text", None)) if self.premium_entities else None,
                 reply_markup=method.reply_markup,
             )
         if isinstance(method, AnswerCallbackQuery):
@@ -110,7 +138,12 @@ class BotHarness:
 
     def __init__(self) -> None:
         self.session = FakeSession()
-        self.bot = Bot(token="42:TEST_TOKEN_FOR_TESTS_ONLY", session=self.session)
+        self.bot = Bot(
+            token="42:TEST_TOKEN_FOR_TESTS_ONLY",
+            session=self.session,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+        self.bot.session.middleware(CustomEmojiMiddleware())
         self.dp = Dispatcher(storage=MemoryStorage())
         setup_middlewares(self.dp)
         setup_routers(self.dp)
@@ -139,6 +172,27 @@ class BotHarness:
         """Сброс между тестами: исходящие вызовы и FSM-состояния всех пользователей."""
         self.clear()
         self.dp.storage.storage.clear()  # MemoryStorage
+        self.session.reject = None
+        self.premium("off")
+
+    def premium(self, mode: str) -> None:
+        """Режим custom emoji.
+
+        "off" — статус выключен заранее, конвертации нет (по умолчанию и после reset());
+        "on"  — Premium активен: иконки конвертируются, сессия отдаёт custom_emoji entities;
+        "lost" — статус включён, но entities не приходят (Premium закончился) — для теста детекции.
+        """
+        if mode not in ("off", "on", "lost"):
+            raise ValueError(mode)
+        custom_emoji_status.reset()
+        self.session.premium_entities = mode == "on"
+        if mode == "off":
+            custom_emoji_status.disabled_at = datetime.now(UTC)
+
+    @property
+    def custom_emoji(self):
+        """Состояние custom emoji (для проверок в тестах)"""
+        return custom_emoji_status
 
     # ── входящие ─────────────────────────────────────────────────
 

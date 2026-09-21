@@ -17,6 +17,13 @@ edit_message_text(inline_message_id=…)), выключит иконки на RE
 
 Ограничение: caption внутри InputMedia (SendMediaGroup, EditMessageMedia) и результаты
 AnswerInlineQuery не конвертируются — текст там лежит не в полях метода.
+
+Проверено 2026-09-21 на живом боте @aio_starter_kit_bot: у владельца активен Telegram
+Premium — иконки пака появились и в тексте, и на кнопках `/admin`, ошибок Telegram не
+было, статус в панели показал «Иконки: premium». Поведение сервера для кнопок без
+Premium (тихий отказ от icon_custom_emoji_id или Bad Request) на живом трафике не
+наблюдалось — оба варианта обработки уже покрыты тестами (tests/test_custom_emoji.py)
+через premium("lost") в харнессе.
 """
 import asyncio
 from datetime import UTC, datetime, timedelta

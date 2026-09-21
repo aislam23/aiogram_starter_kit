@@ -17,6 +17,10 @@
    (двойная нагрузка), при рестарте бота теряется без следа.
 5. Отправляет `text=message.text` с `parse_mode=HTML`: форматирование админа теряется,
    символ `<` в тексте ломает отправку.
+6. `receive_broadcast_message` кладёт в FSM-состояние объект `Message`. `RedisStorage.set_data`
+   делает `json.dumps` → `TypeError: Object of type Message is not JSON serializable`. В проде
+   (`RedisStorage`) мастер рассылки падает ещё до подтверждения; тесты этого не видят, потому что
+   харнесс работает на `MemoryStorage`.
 
 ## Цели
 
@@ -57,7 +61,7 @@
 | `app/services/broadcast.py` | `BroadcastService` переписан: синглтон `broadcast`, фоновая задача, курсор, чекпоинты, возобновление; `ProgressReporter` без изменений |
 | `app/services/liveness.py` | `start()` отказывает при идущей рассылке; планировщик пропускает тик |
 | `app/services/__init__.py` | экспорт `broadcast` |
-| `app/handlers/admin/admin.py` | `confirm_broadcast` запускает фон и сразу выходит; колбэки `broadcast:stop/refresh/back`; строка рассылки в `/admin`; `admin_broadcast` при идущей рассылке открывает экран прогресса |
+| `app/handlers/admin/admin.py` | `receive_broadcast_message` кладёт в state `message.model_dump_json()` (строку), а не объект; `confirm_broadcast` запускает фон и сразу выходит; колбэки `broadcast:stop/refresh/back`; строка рассылки в `/admin`; `admin_broadcast` при идущей рассылке открывает экран прогресса |
 | `app/keyboards/admin.py` | `broadcast_running()`, `broadcast_done()` |
 | `app/main.py` | `broadcast.configure(bot)` + `resume_pending()` в `on_startup`; `stop()` + `wait()` в `on_shutdown` |
 | `tests/conftest.py` | `FakeDb`: хранилище рассылок и `get_alive_user_ids` |
@@ -143,11 +147,14 @@ class BroadcastProgress:
 
 - `start(broadcast_id, progress_callback=None) -> Optional[asyncio.Task]` — `None`, если
   `self.is_running()` или `liveness.is_running()`. Создаёт задачу `broadcast-{id}`.
-- `stop() -> bool` — ставит `_stop_requested = True`, отменяет задачу.
+- `stop() -> bool` — ставит `_stop_requested = True`, отменяет задачу. Итоговый статус `stopped`.
+- `stop_for_shutdown() -> bool` — отменяет задачу **без** `_stop_requested`: статус в БД остаётся
+  `running`, рассылка возобновится после рестарта.
 - `wait(timeout=None)` — `asyncio.wait({task}, timeout)` + `_log_outcome` (как в liveness).
 - `is_running() -> bool` — задача жива или `progress is not None`.
 - `resume_pending() -> None` — в `on_startup`: если `db.get_running_broadcast()` есть —
   `start(row.id)` и watcher, который по завершении шлёт итог всем админам через `notify_admins`.
+  Если итог со статусом `running` (снова прервана рестартом) — ничего не шлём.
   Лог: `📤 Broadcast #N resumed at processed/total`.
 - `run(broadcast_id, progress_callback=None) -> BroadcastProgress` — цикл.
 
@@ -155,14 +162,16 @@ class BroadcastProgress:
 
 ```
 row = await db.get_broadcast(broadcast_id)              # нет или не running → RuntimeError
-message = Message.model_validate_json(row.content)
-keyboard = AdminKeyboards.create_custom_button(row.button_text, row.button_url) если оба есть
 progress = BroadcastProgress(id, total=row.total, sent=row.sent, failed=row.failed, blocked=row.blocked)
 self.progress = progress; self.last_result = None; self._stop_requested = False
 delay = 1 / max(settings.broadcast_rate_limit_rps, 1)
 next_at = time.monotonic(); after_id = row.last_user_id; last_report = 0.0; since_checkpoint = 0
 
 try:
+    # Восстановление контента — внутри try: невалидный JSON должен закончиться status=failed,
+    # иначе строка останется running и resume_pending() будет поднимать её на каждом рестарте
+    message = Message.model_validate_json(row.content)
+    keyboard = AdminKeyboards.create_custom_button(row.button_text, row.button_url) если оба есть
     while True:
         ids = await db.get_alive_user_ids(after_id, BATCH_SIZE)
         if not ids: break
@@ -250,12 +259,19 @@ await self.bot(method)
 1. `is_admin` проверка как сейчас.
 2. Если `broadcast.is_running()` → показать экран прогресса, `callback.answer("Рассылка уже идёт", show_alert=True)`, `state.clear()`, выход.
    Если `liveness.is_running()` → `callback.answer("Идёт проверка живых — дождитесь её окончания", show_alert=True)`, `state.clear()`, выход.
-3. `broadcast_message` из state (как сейчас — объект `Message`); `total = await db.get_alive_users_count()`.
-4. `broadcast_id = await db.create_broadcast(created_by=callback.from_user.id, content=broadcast_message.model_dump_json(), button_text, button_url, total)`.
+3. `content = data["broadcast_message"]` — уже строка JSON (см. ниже); `total = await db.get_alive_users_count()`.
+4. `broadcast_id = await db.create_broadcast(created_by=callback.from_user.id, content=content, button_text, button_url, total)`.
 5. `await callback.answer()`; `await state.clear()` — хендлер больше не ждёт конца рассылки.
 6. `reporter = ProgressReporter(callback.message)`; экран «📤 <b>Рассылка…</b>\n\nЗапускаю…» с `broadcast_running()`.
-7. `task = broadcast.start(broadcast_id, on_progress)`; `None` (гонка) → `callback.answer("Рассылка уже идёт", show_alert=True)` и `db.update_broadcast(id, …, status="failed")`, чтобы строка не осталась `running`.
-8. `watch()`-задача как в `liveness_confirm`: по завершении `reporter.finish(format_broadcast_result(result), broadcast_done())`; при исключении — «❌ Рассылка упала, подробности в логах».
+7. `task = broadcast.start(broadcast_id, on_progress)`; `None` (гонка) → `callback.answer("Рассылка уже идёт", show_alert=True)` и `db.update_broadcast(id, last_user_id=0, sent=0, failed=0, blocked=0, status="failed")`, чтобы строка не осталась `running`.
+8. `watch()`-задача как в `liveness_confirm`: по завершении `reporter.finish(format_broadcast_result(result), broadcast_done())`; при исключении — «❌ Рассылка упала, подробности в логах». Если `result.status == "running"` (бот выключается) — ничего не редактировать: после рестарта итог придёт через `resume_pending`.
+
+### Мастер создания (`receive_broadcast_message`)
+
+В state кладём `broadcast_message=message.model_dump_json()` — строку. `RedisStorage` хранит
+данные через `json.dumps`, объект `Message` туда не помещается (баг №6). Превью «получателей: N»
+и остальные шаги мастера не меняются. Тест харнеса на этот шаг проверяет, что значение в state —
+`str` (иначе `MemoryStorage` в тестах снова скроет проблему).
 
 ### Колбэки
 
@@ -325,6 +341,8 @@ await self.bot(method)
 ### `tests/test_broadcast.py` — хендлеры (через `harness`)
 
 13. Подтверждение: создана строка в `fake_db.broadcasts`, state очищен **до** окончания рассылки, экран «Запускаю…» показан, `callback.answer` вызван до отправки.
+13a. `receive_broadcast_message`: `await state.get_data()` содержит `broadcast_message` типа `str`, и `Message.model_validate_json` его восстанавливает с тем же `text`.
+13b. Невалидный `content` в строке `running` → `run` завершается с `status="failed"`, `finished_at` есть, `resume_pending()` на следующем вызове ничего не запускает.
 14. Итог: после завершения фоновой задачи сообщение прогресса отредактировано в `format_broadcast_result`.
 15. Повторное подтверждение при идущей рассылке → alert «Рассылка уже идёт», новая строка не создана.
 16. `broadcast:stop` → задача отменена, итог «остановлена».
@@ -351,6 +369,6 @@ await self.bot(method)
   получат сообщение, если их id больше курсора (Telegram id не монотонны по времени — это
   допустимо: часть новых получит, часть нет).
 - `Message.model_validate_json` при обновлении aiogram: старые JSON в `broadcasts.content`
-  могут не провалидироваться → `failed` с логом; на новые рассылки не влияет.
+  могут не провалидироваться → `failed` с логом (разбор внутри `try`); на новые рассылки не влияет.
 - Дубликаты до `CHECKPOINT_EVERY` получателей при аварийном завершении процесса — принято.
 - Один процесс бота: две реплики запустят одну рассылку дважды. Шаблон рассчитан на один инстанс.

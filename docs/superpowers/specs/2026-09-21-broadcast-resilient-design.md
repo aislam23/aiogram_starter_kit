@@ -115,7 +115,7 @@
 BATCH_SIZE = 500            # id получателей на один запрос к БД
 CHECKPOINT_EVERY = 50       # отправок между записями курсора в БД
 PROGRESS_EVERY_SECONDS = 5  # не чаще — колбэк прогресса (редактирует сообщение админа)
-MAX_RETRIES = 3             # повторов одному получателю после flood-wait
+MAX_RETRIES = 3             # попыток отправки одному получателю всего (как в liveness), не повторов
 ```
 
 `settings.broadcast_rate_limit_rps` (`BROADCAST_RATE_LIMIT_RPS`, по умолчанию 20) — рядом с
@@ -155,7 +155,9 @@ class BroadcastProgress:
 - `resume_pending() -> None` — в `on_startup`: если `db.get_running_broadcast()` есть —
   `start(row.id)` и watcher, который по завершении шлёт итог всем админам через `notify_admins`.
   Если итог со статусом `running` (снова прервана рестартом) — ничего не шлём.
-  Лог: `📤 Broadcast #N resumed at processed/total`.
+  Лог: `📤 Broadcast #N resumed at processed/total`. Если `start()` вернул `None` —
+  `logger.warning` (строка останется `running` до следующего рестарта). Чтобы этого не случилось,
+  `on_startup` вызывает `resume_pending()` **до** запуска планировщика liveness.
 - `run(broadcast_id, progress_callback=None) -> BroadcastProgress` — цикл.
 
 ### Цикл `run`
@@ -227,13 +229,15 @@ await self.bot(method)
 ```
 
 `send_copy` у сообщения без `_bot` (восстановлено из JSON) возвращает метод — `await self.bot(method)`
-не требует привязки. Если `send_copy` бросил `TypeError` (тип не поддерживается) — `"failed"`.
+не требует привязки. `TypeError` из `send_copy` (тип сообщения не поддерживается) в `_send` **не
+ловится**: он одинаков для всех получателей, поэтому должен уронить всю рассылку в `failed` через
+`except Exception` в `run`, а не дать 150 000 «failed» по темпу 20/с.
 
-Ошибки (цикл до `MAX_RETRIES` попыток):
+Ошибки (цикл `for _ in range(MAX_RETRIES)`):
 
 | Исключение | Вердикт | Действие |
 |---|---|---|
-| `TelegramRetryAfter` | повтор | `logger.warning`, `sleep(retry_after)` **целиком, без кэпа** — урезать значит получить следующий 429 и продлить бан; после `MAX_RETRIES` → `failed`, `_error_kinds["RetryAfter:exhausted"]` |
+| `TelegramRetryAfter` | повтор | `logger.warning`, `sleep(retry_after)` **целиком, без кэпа** — урезать значит получить следующий 429 и продлить бан; исчерпаны `MAX_RETRIES` попыток → `failed`, `_error_kinds["RetryAfter:exhausted"]` |
 | `TelegramForbiddenError` | `blocked` | `db.set_bot_blocked(uid, True)` (ошибка БД → warning) |
 | `TelegramBadRequest` с «chat not found» / «user is deactivated» | `blocked` | то же — удалённый аккаунт |
 | прочий `TelegramBadRequest` | `failed` | `_error_kinds["BadRequest:<40 симв.>"]`, `logger.debug` |
@@ -263,7 +267,7 @@ await self.bot(method)
 4. `broadcast_id = await db.create_broadcast(created_by=callback.from_user.id, content=content, button_text, button_url, total)`.
 5. `await callback.answer()`; `await state.clear()` — хендлер больше не ждёт конца рассылки.
 6. `reporter = ProgressReporter(callback.message)`; экран «📤 <b>Рассылка…</b>\n\nЗапускаю…» с `broadcast_running()`.
-7. `task = broadcast.start(broadcast_id, on_progress)`; `None` (гонка) → `callback.answer("Рассылка уже идёт", show_alert=True)` и `db.update_broadcast(id, last_user_id=0, sent=0, failed=0, blocked=0, status="failed")`, чтобы строка не осталась `running`.
+7. `task = broadcast.start(broadcast_id, on_progress)`; `None` (гонка) → alert «Идёт проверка живых…», если `liveness.is_running()`, иначе «Рассылка уже идёт», и `db.update_broadcast(id, last_user_id=0, sent=0, failed=0, blocked=0, status="failed")`, чтобы строка не осталась `running`.
 8. `watch()`-задача как в `liveness_confirm`: по завершении `reporter.finish(format_broadcast_result(result), broadcast_done())`; при исключении — «❌ Рассылка упала, подробности в логах». Если `result.status == "running"` (бот выключается) — ничего не редактировать: после рестарта итог придёт через `resume_pending`.
 
 ### Мастер создания (`receive_broadcast_message`)
@@ -290,7 +294,7 @@ await self.bot(method)
 
 Строка после «🕐 Последний запуск»:
 - идёт: `📤 Рассылка: идёт <b>12 340 / 150 000</b> (8%)`
-- нет: `📤 Последняя рассылка: <b>20.09 14:10</b> — done, 149 812 / 150 000` (из `db.get_last_broadcast()`), или `📤 Рассылок ещё не было`.
+- нет: `📤 Последняя рассылка: <b>20.09 14:10</b> — завершена, 149 812 / 150 000` (дата — `finished_at`, статус по-русски: завершена / остановлена / упала; из `db.get_last_broadcast()`), или `📤 Рассылок ещё не было`.
 
 ### Тексты
 
@@ -305,7 +309,7 @@ await self.bot(method)
 
 ## Жизненный цикл в `app/main.py`
 
-- `on_startup`: после `liveness.configure(bot)` — `broadcast.configure(bot)`; `await broadcast.resume_pending()`.
+- `on_startup`: после `liveness.configure(bot)` — `broadcast.configure(bot)`; `await broadcast.resume_pending()` — **до** `create_task(liveness.run_scheduler())`, иначе ночной автопрогон может занять слот.
 - `on_shutdown`: до остановки liveness — `if broadcast.stop_for_shutdown(): await broadcast.wait(timeout=10)`.
   `stop_for_shutdown()` отменяет задачу **без** `_stop_requested`, чтобы статус остался `running`
   и рассылка возобновилась после рестарта. (Ручной `stop()` из админки ставит `stopped`.)
@@ -325,9 +329,10 @@ await self.bot(method)
 бросает `TelegramRetryAfter` / `TelegramForbiddenError` / `TelegramBadRequest`. Патч
 `asyncio.sleep` в модуле `app.services.broadcast` записывает запрошенные интервалы.
 
-1. Ровный темп: 5 получателей при rps=10 → `sleep` вызван с интервалами ≈ 0.1 (допуск), 5 методов отправлены по одному.
+1. Ровный темп: 5 получателей при rps=10 → **разности соседних** аргументов `sleep` ≈ 0.1 (при no-op `sleep` `monotonic` почти не растёт, поэтому аргументы кумулятивны: 0, 0.1, 0.2…), 5 методов отправлены по одному.
 2. 429 → `sleep(retry_after)` без урезания, тот же получатель повторён, вердикт `sent`.
-3. 429 × `MAX_RETRIES` → `failed`, `_error_kinds["RetryAfter:exhausted"]`.
+3. 429 на всех `MAX_RETRIES` попытках → `failed`, `_error_kinds["RetryAfter:exhausted"]`; `sleep` вызван с `retry_after` ровно `MAX_RETRIES` раз.
+3a. `send_copy` бросает `TypeError` (неподдерживаемый тип) → `run` завершается `status="failed"` после первого получателя, остальные не трогаются.
 4. `Forbidden` → `blocked`, `fake_db.calls` содержит `set_bot_blocked(uid, True)`.
 5. `BadRequest("chat not found")` → `blocked`; другой `BadRequest` → `failed`.
 6. Чекпоинт: 120 получателей → `update_broadcast` вызван на 50, 100 и в `finally` (120, `status="done"`).
@@ -342,7 +347,7 @@ await self.bot(method)
 
 13. Подтверждение: создана строка в `fake_db.broadcasts`, state очищен **до** окончания рассылки, экран «Запускаю…» показан, `callback.answer` вызван до отправки.
 13a. `receive_broadcast_message`: `await state.get_data()` содержит `broadcast_message` типа `str`, и `Message.model_validate_json` его восстанавливает с тем же `text`.
-13b. Невалидный `content` в строке `running` → `run` завершается с `status="failed"`, `finished_at` есть, `resume_pending()` на следующем вызове ничего не запускает.
+13b. (блок сервиса) Невалидный `content` в строке `running` → `run` завершается с `status="failed"`, `finished_at` есть, `resume_pending()` на следующем вызове ничего не запускает.
 14. Итог: после завершения фоновой задачи сообщение прогресса отредактировано в `format_broadcast_result`.
 15. Повторное подтверждение при идущей рассылке → alert «Рассылка уже идёт», новая строка не создана.
 16. `broadcast:stop` → задача отменена, итог «остановлена».

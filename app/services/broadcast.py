@@ -27,10 +27,9 @@ from aiogram.methods import SendMessage, TelegramMethod
 from aiogram.types import InlineKeyboardMarkup, Message
 from loguru import logger
 
+from app.config import settings
 from app.database import db
-
-# Импорты settings, AdminKeyboards (задача 3), notify_admins, liveness (задача 4) добавляются там,
-# где появляется использующий их код — иначе ruff F401 и красный just check на промежуточных коммитах
+from app.keyboards import AdminKeyboards
 
 BATCH_SIZE = 500            # id получателей на один запрос к БД
 CHECKPOINT_EVERY = 50       # отправок между записями курсора в БД
@@ -169,6 +168,100 @@ class BroadcastService:
 
     def configure(self, bot: Bot) -> None:
         self.bot = bot
+
+    def _task_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def is_running(self) -> bool:
+        """Идёт ли рассылка — включая вызов run() напрямую, без start()"""
+        return self._task_running() or self.progress is not None
+
+    async def run(self, broadcast_id: int, progress_callback: Optional[ProgressCallback] = None) -> BroadcastProgress:
+        """Одна рассылка от курсора до конца. При отмене дописывает курсор; статус — см. except."""
+        if self.bot is None:
+            raise RuntimeError("BroadcastService не сконфигурирован (bot=None)")
+        row = await db.get_broadcast(broadcast_id)
+        if row is None or row.status != "running":
+            raise RuntimeError(f"Рассылка #{broadcast_id} не найдена или уже завершена")
+        progress = BroadcastProgress(broadcast_id, total=row.total, sent=row.sent, failed=row.failed, blocked=row.blocked)
+        self.progress = progress
+        self.last_result = None  # чтобы наблюдатель не показал итог прошлой рассылки
+        self._stop_requested = False
+        self._error_kinds = Counter()
+        delay = 1 / max(settings.broadcast_rate_limit_rps, 1)
+        next_at = time.monotonic()
+        after_id = row.last_user_id
+        last_report = 0.0  # первый прогресс-колбэк — сразу
+        since_checkpoint = 0
+        logger.info(f"📤 Broadcast #{broadcast_id} started at {progress.processed}/{progress.total}")
+
+        try:
+            # Восстановление контента внутри try: невалидный JSON должен закончиться status=failed,
+            # иначе строка останется running и resume_pending() будет поднимать её на каждом рестарте
+            message = Message.model_validate_json(row.content)
+            keyboard = None
+            if row.button_text and row.button_url:
+                keyboard = AdminKeyboards.create_custom_button(row.button_text, row.button_url)
+            while True:
+                ids = await db.get_alive_user_ids(after_id, BATCH_SIZE)
+                if not ids:
+                    break
+                for uid in ids:
+                    # Темп задаём до запроса: сеть может отвечать сколь угодно долго,
+                    # но частота запросов остаётся ≈ broadcast_rate_limit_rps
+                    await asyncio.sleep(max(0.0, next_at - time.monotonic()))
+                    next_at = max(next_at, time.monotonic()) + delay
+
+                    verdict = await self._send(uid, message, keyboard)
+                    setattr(progress, verdict, getattr(progress, verdict) + 1)
+                    after_id = uid
+                    since_checkpoint += 1
+
+                    if since_checkpoint >= CHECKPOINT_EVERY:
+                        await self._checkpoint(progress, after_id)
+                        since_checkpoint = 0
+                    if progress_callback and time.monotonic() - last_report >= PROGRESS_EVERY_SECONDS:
+                        last_report = time.monotonic()
+                        try:
+                            await progress_callback(progress)
+                        except Exception as e:
+                            logger.debug(f"broadcast progress callback failed: {e}")
+            progress.status = "done"
+        except asyncio.CancelledError:
+            # stop() из админки → stopped (финал); отмена на shutdown → running, чтобы возобновиться после рестарта
+            progress.status = "stopped" if self._stop_requested else "running"
+            logger.info(f"📤 Broadcast #{broadcast_id} cancelled at {progress.processed}/{progress.total} → {progress.status}")
+            raise
+        except Exception as e:
+            progress.status = "failed"
+            logger.exception(f"❌ Broadcast #{broadcast_id} failed at {progress.processed}/{progress.total}: {e}")
+            raise
+        finally:
+            progress.finished_at = time.monotonic()
+            try:
+                await self._checkpoint(progress, after_id, status=progress.status)
+            except Exception as e:
+                logger.exception(f"❌ Не удалось записать итог рассылки #{broadcast_id}: {e}")
+            self.last_result = progress
+            self.progress = None
+            logger.info(
+                f"📤 Broadcast #{broadcast_id} {progress.status}: sent={progress.sent} failed={progress.failed} "
+                f"blocked={progress.blocked} of {progress.total}{self._errors_summary()}"
+            )
+        return progress
+
+    async def _checkpoint(self, progress: BroadcastProgress, after_id: int, status: Optional[str] = None) -> None:
+        """Курсор и счётчики в БД; status='running' на shutdown не проставляет finished_at"""
+        await db.update_broadcast(
+            progress.broadcast_id, last_user_id=after_id, sent=progress.sent, failed=progress.failed,
+            blocked=progress.blocked, status=status,
+        )
+
+    def _errors_summary(self) -> str:
+        """Топ-5 видов ошибок — чтобы не разбирать логи по одному получателю"""
+        if not self._error_kinds:
+            return ""
+        return f" kinds={dict(self._error_kinds.most_common(5))}"
 
     async def _send(self, user_id: int, message: Message, keyboard: Optional[InlineKeyboardMarkup]) -> Verdict:
         """Одному получателю: 'sent' | 'blocked' | 'failed'. На 429 ждём весь retry_after."""

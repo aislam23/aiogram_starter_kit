@@ -269,6 +269,138 @@ async def test_send_counts_other_bad_request_as_failed(fake_db, sleeps):
     assert list(service._error_kinds) == ["BadRequest:Bad Request: wrong file identifier"]
 
 
+# --- run: ровный темп, курсор, чекпоинты, статусы ----------------------------
+
+
+async def _new_broadcast(fake_db, message: Message | None = None, total: int | None = None, **button) -> int:
+    message = message or text_message()
+    return await fake_db.create_broadcast(
+        created_by=777, content=message.model_dump_json(), button_text=button.get("button_text"),
+        button_url=button.get("button_url"), total=len(fake_db.users) if total is None else total,
+    )
+
+
+async def test_run_paces_sends_evenly(fake_db, sleeps, monkeypatch):
+    for uid in range(1, 6):
+        await fake_db.add_user(uid)
+    monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 10)
+    bot = FakeBot()
+    bid = await _new_broadcast(fake_db)
+
+    result = await _service(bot).run(bid)
+
+    assert bot.chat_ids == [1, 2, 3, 4, 5]
+    assert (result.status, result.sent, result.processed) == ("done", 5, 5)
+    # sleep не ждёт, monotonic почти не растёт → аргументы кумулятивны (0, 0.1, 0.2…); ровный темп = равные разности
+    assert len(sleeps) == 5
+    gaps = [b - a for a, b in zip(sleeps, sleeps[1:], strict=False)]  # ruff B905
+    assert all(abs(gap - 0.1) < 0.02 for gap in gaps), sleeps
+
+
+async def test_run_checkpoints_cursor_every_n_sends(fake_db, sleeps):
+    n = broadcast_module.CHECKPOINT_EVERY * 2 + 20
+    for uid in range(1, n + 1):
+        await fake_db.add_user(uid)
+    bid = await _new_broadcast(fake_db)
+
+    await _service(FakeBot()).run(bid)
+
+    updates = [c[1] for c in fake_db.calls if c[0] == "update_broadcast"]
+    assert [u["last_user_id"] for u in updates] == [50, 100, n]
+    assert [u["status"] for u in updates] == [None, None, "done"]
+    row = fake_db.broadcasts[bid]
+    assert (row.status, row.sent, row.last_user_id) == ("done", n, n)
+    assert row.finished_at is not None
+
+
+async def test_run_resumes_from_cursor(fake_db, sleeps):
+    for uid in (1, 2, 3, 4, 5):
+        await fake_db.add_user(uid)
+    bid = await _new_broadcast(fake_db)
+    await fake_db.update_broadcast(bid, last_user_id=3, sent=3, failed=0, blocked=0)
+    bot = FakeBot()
+
+    result = await _service(bot).run(bid)
+
+    assert bot.chat_ids == [4, 5]
+    assert (result.sent, result.processed, result.status) == (5, 5, "done")
+
+
+async def test_run_skips_users_who_blocked_bot(fake_db, sleeps):
+    for uid in (1, 2, 3):
+        await fake_db.add_user(uid)
+    await fake_db.set_bot_blocked(2, True)
+    bid = await _new_broadcast(fake_db, total=2)
+    bot = FakeBot()
+
+    await _service(bot).run(bid)
+
+    assert bot.chat_ids == [1, 3]
+
+
+async def test_run_sends_button_from_row(fake_db, sleeps):
+    await fake_db.add_user(1)
+    bid = await _new_broadcast(fake_db, button_text="Сайт", button_url="https://example.com")
+    bot = FakeBot()
+
+    await _service(bot).run(bid)
+
+    button = bot.methods[0].reply_markup.inline_keyboard[0][0]
+    assert (button.text, button.url) == ("Сайт", "https://example.com")
+
+
+async def test_run_reports_progress_immediately_then_throttled(fake_db, sleeps):
+    for uid in (1, 2, 3):
+        await fake_db.add_user(uid)
+    bid = await _new_broadcast(fake_db)
+    seen: list[int] = []
+
+    async def on_progress(progress) -> None:
+        seen.append(progress.processed)
+
+    await _service(FakeBot()).run(bid, on_progress)
+
+    assert seen == [1]  # первый отчёт сразу, следующие не чаще PROGRESS_EVERY_SECONDS
+
+
+async def test_run_fails_when_content_is_invalid(fake_db, sleeps):
+    from pydantic import ValidationError
+
+    await fake_db.add_user(1)
+    bid = await fake_db.create_broadcast(created_by=777, content="{not json", button_text=None, button_url=None, total=1)
+    service = _service(FakeBot())
+
+    with pytest.raises(ValidationError):
+        await service.run(bid)
+
+    row = fake_db.broadcasts[bid]
+    assert row.status == "failed" and row.finished_at is not None  # иначе resume_pending поднимал бы её вечно
+    assert service.last_result.status == "failed"
+    assert not service.is_running()
+
+
+async def test_run_fails_fast_on_unsupported_message_type(fake_db, sleeps):
+    for uid in (1, 2, 3):
+        await fake_db.add_user(uid)
+    empty = Message(message_id=1, date=datetime.now(UTC), chat=_CHAT, from_user=_ADMIN)
+    bid = await _new_broadcast(fake_db, message=empty)
+    bot = FakeBot()
+
+    with pytest.raises(TypeError):
+        await _service(bot).run(bid)
+
+    assert bot.chat_ids == []  # не 3 «failed» по одному, а сразу стоп
+    assert fake_db.broadcasts[bid].status == "failed"
+
+
+async def test_run_refuses_finished_broadcast(fake_db, sleeps):
+    bid = await _new_broadcast(fake_db)
+    await fake_db.update_broadcast(bid, last_user_id=0, sent=0, failed=0, blocked=0, status="done")
+
+    with pytest.raises(RuntimeError):
+        await _service(FakeBot()).run(bid)
+
+
 # --- confirm_broadcast: FSM очищается при любом исходе ----------------------
 
 

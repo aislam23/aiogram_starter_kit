@@ -16,7 +16,16 @@ from aiogram.methods import EditMessageText, SendMessage, SendPhoto, SendSticker
 from aiogram.types import Chat, Message, MessageEntity, PhotoSize, Sticker, User
 
 from app.keyboards import AdminKeyboards
-from app.services.broadcast import MAX_RETRIES, BroadcastService, ProgressReporter, build_send_method
+from app.services.broadcast import (
+    MAX_RETRIES,
+    BroadcastProgress,
+    BroadcastService,
+    ProgressReporter,
+    broadcast,
+    build_send_method,
+    format_broadcast_result,
+)
+from app.services.liveness import LivenessProgress, liveness
 
 broadcast_module = importlib.import_module("app.services.broadcast")
 _real_sleep = asyncio.sleep
@@ -95,6 +104,24 @@ def sleeps(monkeypatch) -> list[float]:
 
     monkeypatch.setattr(broadcast_module.asyncio, "sleep", fake_sleep)
     return calls
+
+
+@pytest.fixture
+def fresh_broadcast():
+    """Глобальный сервис общий на процесс — сбрасываем между тестами."""
+    def _reset() -> None:
+        broadcast._task, broadcast.progress, broadcast.last_result = None, None, None
+        broadcast._stop_requested = False
+
+    _reset()
+    yield broadcast
+    _reset()
+
+
+async def _drain_watchers() -> None:
+    """Дождаться наблюдателей (они дописывают итог после задачи рассылки)."""
+    for watcher in list(broadcast_module._watchers):
+        await watcher
 
 
 async def no_sleep(_seconds: float) -> None:
@@ -399,6 +426,132 @@ async def test_run_refuses_finished_broadcast(fake_db, sleeps):
 
     with pytest.raises(RuntimeError):
         await _service(FakeBot()).run(bid)
+
+
+# --- start/stop/wait, shutdown, resume_pending ------------------------------
+
+
+async def test_stop_marks_stopped_and_keeps_cursor(fake_db, fresh_broadcast, monkeypatch):
+    for uid in range(1, 51):
+        await fake_db.add_user(uid)
+    monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 1000)  # 1 мс на получателя, реальный sleep
+    bot = FakeBot()
+    fresh_broadcast.configure(bot)
+    bid = await _new_broadcast(fake_db)
+
+    task = fresh_broadcast.start(bid)
+    assert task is not None
+    assert fresh_broadcast.start(bid) is None  # вторая параллельно не стартует
+    await _real_sleep(0.01)
+    assert fresh_broadcast.stop() is True
+    await fresh_broadcast.wait(timeout=1)
+
+    assert task.cancelled()
+    result = fresh_broadcast.last_result
+    assert result.status == "stopped" and 0 < result.processed < 50
+    row = fake_db.broadcasts[bid]
+    assert row.status == "stopped" and row.finished_at is not None
+    assert row.last_user_id == bot.chat_ids[-1]  # курсор — последний обработанный
+    assert not fresh_broadcast.is_running()
+    assert fresh_broadcast.stop() is False
+
+
+async def test_shutdown_keeps_broadcast_running_in_db(fake_db, fresh_broadcast, monkeypatch):
+    for uid in range(1, 51):
+        await fake_db.add_user(uid)
+    monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 1000)
+    fresh_broadcast.configure(FakeBot())
+    bid = await _new_broadcast(fake_db)
+
+    fresh_broadcast.start(bid)
+    await _real_sleep(0.01)
+    assert fresh_broadcast.stop_for_shutdown() is True
+    await fresh_broadcast.wait(timeout=1)
+
+    row = fake_db.broadcasts[bid]
+    assert row.status == "running" and row.finished_at is None  # возобновится после рестарта
+    assert 0 < row.last_user_id < 50
+    assert fresh_broadcast.last_result.status == "running"
+
+
+async def test_resume_pending_continues_and_notifies_admins(fake_db, fresh_broadcast, sleeps, monkeypatch):
+    for uid in (1, 2, 3, 4, 5):
+        await fake_db.add_user(uid)
+    bid = await _new_broadcast(fake_db)
+    await fake_db.update_broadcast(bid, last_user_id=3, sent=3, failed=0, blocked=0)
+    bot = FakeBot()
+    fresh_broadcast.configure(bot)
+    notified: list[str] = []
+
+    async def fake_notify(_bot, text: str) -> None:
+        notified.append(text)
+
+    monkeypatch.setattr(broadcast_module, "notify_admins", fake_notify)
+
+    await fresh_broadcast.resume_pending()
+    await fresh_broadcast.wait(timeout=1)
+    await _drain_watchers()
+
+    assert bot.chat_ids == [4, 5]
+    assert fake_db.broadcasts[bid].status == "done"
+    assert len(notified) == 1 and "Рассылка завершена" in notified[0] and "<b>5</b>" in notified[0]
+
+
+async def test_resume_pending_without_running_broadcast_does_nothing(fake_db, fresh_broadcast):
+    fresh_broadcast.configure(FakeBot())
+
+    await fresh_broadcast.resume_pending()
+
+    assert not fresh_broadcast.is_running()
+
+
+async def test_resume_pending_stays_silent_if_interrupted_again(fake_db, fresh_broadcast, monkeypatch):
+    for uid in range(1, 51):
+        await fake_db.add_user(uid)
+    monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 1000)
+    await _new_broadcast(fake_db)
+    fresh_broadcast.configure(FakeBot())
+    notified: list[str] = []
+
+    async def fake_notify(_bot, text: str) -> None:
+        notified.append(text)
+
+    monkeypatch.setattr(broadcast_module, "notify_admins", fake_notify)
+
+    await fresh_broadcast.resume_pending()
+    await _real_sleep(0.01)
+    fresh_broadcast.stop_for_shutdown()
+    await fresh_broadcast.wait(timeout=1)
+    await _drain_watchers()
+
+    assert notified == []
+
+
+async def test_broadcast_refuses_while_liveness_runs(fake_db, fresh_broadcast):
+    liveness.progress = LivenessProgress(total=1)  # эмулируем идущий прогон
+    try:
+        assert fresh_broadcast.start(1) is None
+    finally:
+        liveness.progress = None
+
+
+async def test_liveness_refuses_while_broadcast_runs(fake_db, fresh_broadcast):
+    fresh_broadcast.progress = BroadcastProgress(broadcast_id=1, total=1)
+
+    assert liveness.start("manual") is None
+
+
+# --- тексты ------------------------------------------------------------------
+
+
+def test_format_result_for_stopped_broadcast():
+    result = BroadcastProgress(broadcast_id=1, total=100, sent=40, failed=2, blocked=3, status="stopped")
+
+    text = format_broadcast_result(result)
+
+    assert text.startswith("⏹ <b>Рассылка остановлена</b>")
+    assert "Остановлена на <b>45</b> из 100" in text
+    assert "Доставлено: <b>40</b>" in text and "Успешность: <b>40%</b>" in text
 
 
 # --- confirm_broadcast: FSM очищается при любом исходе ----------------------

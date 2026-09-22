@@ -30,6 +30,8 @@ from loguru import logger
 from app.config import settings
 from app.database import db
 from app.keyboards import AdminKeyboards
+from app.services.admins import notify_admins
+from app.services.liveness import liveness
 
 BATCH_SIZE = 500            # id получателей на один запрос к БД
 CHECKPOINT_EVERY = 50       # отправок между записями курсора в БД
@@ -155,6 +157,10 @@ def build_send_method(message: Message, chat_id: int, keyboard: Optional[InlineK
     return method
 
 
+# Ссылки на наблюдателей возобновлённых рассылок, чтобы задачи не собрал GC
+_watchers: set[asyncio.Task] = set()
+
+
 class BroadcastService:
     """Одна рассылка за раз (в рамках процесса); синглтон `broadcast`, configure(bot) в main.py"""
 
@@ -175,6 +181,70 @@ class BroadcastService:
     def is_running(self) -> bool:
         """Идёт ли рассылка — включая вызов run() напрямую, без start()"""
         return self._task_running() or self.progress is not None
+
+    def start(self, broadcast_id: int, progress_callback: Optional[ProgressCallback] = None) -> Optional[asyncio.Task]:
+        """Запустить рассылку в фоне. None — если идёт рассылка или проверка живых (общий лимит Telegram)."""
+        if self.is_running() or liveness.is_running():
+            return None
+        self._task = asyncio.create_task(self.run(broadcast_id, progress_callback), name=f"broadcast-{broadcast_id}")
+        return self._task
+
+    def stop(self) -> bool:
+        """Остановить из админки: статус stopped (финальный). True — если было что останавливать."""
+        if not self._task_running():
+            return False
+        self._stop_requested = True
+        self._task.cancel()
+        return True
+
+    def stop_for_shutdown(self) -> bool:
+        """Прервать на выключении бота: статус остаётся running, рассылка возобновится после рестарта."""
+        if not self._task_running():
+            return False
+        self._task.cancel()
+        return True
+
+    async def wait(self, timeout: Optional[float] = None) -> None:
+        """Дождаться завершения (в т.ч. после stop()). asyncio.wait — не глушит CancelledError вызывающего."""
+        if self._task is None:
+            return
+        await asyncio.wait({self._task}, timeout=timeout)
+        self._log_outcome(self._task)
+
+    @staticmethod
+    def _log_outcome(task: asyncio.Task) -> None:
+        """Забрать исключение задачи, чтобы оно не потерялось и не всплыло в GC"""
+        if not task.done():
+            logger.warning("📤 Broadcast: рассылка не завершилась за отведённое время")
+            return
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.opt(exception=exc).error("❌ Broadcast crashed")
+
+    async def resume_pending(self) -> None:
+        """При старте бота: продолжить рассылку, прерванную рестартом. Итог — всем админам."""
+        row = await db.get_running_broadcast()
+        if row is None:
+            return
+        task = self.start(row.id)
+        if task is None:
+            logger.warning(f"📤 Broadcast #{row.id} не возобновлена: занято — останется running до следующего рестарта")
+            return
+        logger.info(f"📤 Broadcast #{row.id} resumed at {row.sent + row.failed + row.blocked}/{row.total}")
+
+        async def watch() -> None:
+            await asyncio.wait({task})
+            self._log_outcome(task)
+            result = self.last_result
+            if result is None or result.status == "running":
+                return  # снова прервана рестартом — итог придёт после следующего
+            await notify_admins(self.bot, format_broadcast_result(result))
+
+        watcher = asyncio.create_task(watch(), name=f"broadcast-{row.id}-watch")
+        _watchers.add(watcher)
+        watcher.add_done_callback(_watchers.discard)
 
     async def run(self, broadcast_id: int, progress_callback: Optional[ProgressCallback] = None) -> BroadcastProgress:
         """Одна рассылка от курсора до конца. При отмене дописывает курсор; статус — см. except."""
@@ -505,3 +575,42 @@ class BroadcastService:
             # Неожиданные ошибки
             logger.error(f"Неожиданная ошибка при отправке пользователю {user_id}: {e}")
             return False
+
+
+STATUS_TITLES = {
+    "done": "✅ <b>Рассылка завершена</b>",
+    "stopped": "⏹ <b>Рассылка остановлена</b>",
+    "failed": "❌ <b>Рассылка упала</b>",
+}
+STATUS_LABELS = {"running": "идёт", "done": "завершена", "stopped": "остановлена", "failed": "упала"}
+
+
+def format_broadcast_progress(progress: BroadcastProgress) -> str:
+    return (
+        "📤 <b>Рассылка…</b>\n\n"
+        f"Отправлено: <b>{progress.processed}</b> из {progress.total} ({progress.percent}%)\n"
+        f"✅ доставлено: {progress.sent} · ❌ ошибок: {progress.failed} · 🚫 заблокировали: {progress.blocked}\n"
+        f"⏱ {progress.elapsed}"
+    )
+
+
+def format_broadcast_result(result: BroadcastProgress) -> str:
+    """Итог рассылки для админа (сообщение прогресса или уведомление после возобновления)"""
+    success = int(result.sent * 100 / result.total) if result.total else 0
+    lines = [STATUS_TITLES.get(result.status, STATUS_TITLES["failed"]), ""]
+    if result.status == "stopped":
+        lines.append(f"Остановлена на <b>{result.processed}</b> из {result.total}")
+    lines += [
+        f"👥 Получателей: <b>{result.total}</b>",
+        f"✅ Доставлено: <b>{result.sent}</b>",
+        f"❌ Ошибок: <b>{result.failed}</b>",
+        f"🚫 Заблокировали бота: <b>{result.blocked}</b>",
+        f"📈 Успешность: <b>{success}%</b>",
+        f"⏱ Длительность: {result.elapsed}",
+    ]
+    return "\n".join(lines)
+
+
+# Глобальный экземпляр: configure(bot) в main.py и в хендлере подтверждения.
+# Не экспортировать из app/services/__init__.py — атрибут app.services.broadcast должен остаться модулем
+broadcast = BroadcastService()

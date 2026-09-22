@@ -81,8 +81,10 @@ class LivenessService:
         return self._task_running() or self.progress is not None
 
     def start(self, trigger: str, progress_callback: Optional[ProgressCallback] = None) -> Optional[asyncio.Task]:
-        """Запустить прогон в фоне. None — если прогон уже идёт."""
-        if self.is_running():
+        """Запустить прогон в фоне. None — если прогон или рассылка уже идут (общий лимит Telegram)."""
+        from app.services.broadcast import broadcast  # ленивый импорт: broadcast.py импортирует liveness
+
+        if self.is_running() or broadcast.is_running():
             return None
         self._task = asyncio.create_task(self.run_check(trigger, progress_callback), name=f"liveness-{trigger}")
         return self._task

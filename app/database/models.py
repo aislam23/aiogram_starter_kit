@@ -92,3 +92,32 @@ class LivenessCheck(Base):
 
     def __repr__(self) -> str:
         return f"<LivenessCheck(id={self.id}, trigger={self.trigger}, checked={self.checked})>"
+
+
+BROADCAST_FINAL_STATUSES = ("done", "stopped", "failed")
+
+
+class Broadcast(Base):
+    """Рассылка: контент, курсор по users.id и счётчики — чтобы продолжить после рестарта бота"""
+
+    __tablename__ = "broadcasts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # running — идёт (или прервана рестартом и ждёт возобновления); done / stopped / failed — финальные
+    status: Mapped[str] = mapped_column(String(20), default="running", server_default="running", nullable=False)
+    created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Message.model_dump_json() исходного сообщения админа: отправляется через send_copy без Telegram
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    button_text: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    button_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    total: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    # Курсор: последний обработанный users.id; возобновление идёт с него
+    last_user_id: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0", nullable=False)
+    sent: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    failed: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    blocked: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<Broadcast(id={self.id}, status={self.status}, sent={self.sent}/{self.total})>"

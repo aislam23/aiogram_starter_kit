@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from datetime import UTC, datetime
 
 from app.database import db  # noqa: E402
-from app.database.models import BotStats, LivenessCheck, User  # noqa: E402
+from app.database.models import BROADCAST_FINAL_STATUSES, BotStats, Broadcast, LivenessCheck, User  # noqa: E402
 from tests.harness import BotHarness, make_user  # noqa: E402
 
 ADMIN_ID = 777
@@ -34,6 +34,7 @@ class FakeDb:
     def __init__(self) -> None:
         self.users: Dict[int, User] = {}
         self.liveness_checks: List[LivenessCheck] = []
+        self.broadcasts: Dict[int, Broadcast] = {}
         self.calls: List[tuple[str, Dict[str, Any]]] = []
 
     async def add_user(self, user_id: int, username=None, first_name=None, last_name=None) -> User:
@@ -100,6 +101,39 @@ class FakeDb:
         done = [c for c in self.liveness_checks if c.finished_at is not None and not c.cancelled]
         return max(done, key=lambda c: c.finished_at) if done else None
 
+    # --- рассылки (BroadcastService) ---
+
+    async def get_alive_user_ids(self, after_id: int, limit: int) -> List[int]:
+        ids = sorted(u.id for u in self.users.values() if u.is_active and not u.bot_blocked and u.id > after_id)
+        return ids[:limit]
+
+    async def create_broadcast(self, *, created_by, content, button_text, button_url, total) -> int:
+        row = Broadcast(id=len(self.broadcasts) + 1, status="running", created_by=created_by, content=content,
+                        button_text=button_text, button_url=button_url, total=total, last_user_id=0,
+                        sent=0, failed=0, blocked=0, created_at=datetime.now(UTC), finished_at=None)
+        self.broadcasts[row.id] = row
+        return row.id
+
+    async def get_broadcast(self, broadcast_id: int) -> Optional[Broadcast]:
+        return self.broadcasts.get(broadcast_id)
+
+    async def get_running_broadcast(self) -> Optional[Broadcast]:
+        running = [b for b in self.broadcasts.values() if b.status == "running"]
+        return max(running, key=lambda b: b.id) if running else None
+
+    async def get_last_broadcast(self) -> Optional[Broadcast]:
+        return max(self.broadcasts.values(), key=lambda b: b.id) if self.broadcasts else None
+
+    async def update_broadcast(self, broadcast_id: int, *, last_user_id, sent, failed, blocked, status=None) -> None:
+        self.calls.append(("update_broadcast", {"id": broadcast_id, "last_user_id": last_user_id, "sent": sent,
+                                                "failed": failed, "blocked": blocked, "status": status}))
+        row = self.broadcasts[broadcast_id]
+        row.last_user_id, row.sent, row.failed, row.blocked = last_user_id, sent, failed, blocked
+        if status is not None:
+            row.status = status
+            if status in BROADCAST_FINAL_STATUSES:
+                row.finished_at = datetime.now(UTC)
+
     async def set_admin(self, user_id: int, claimed_username: Optional[str] = None) -> None:
         user = self.users.get(user_id)
         if user:
@@ -151,7 +185,9 @@ def fake_db(monkeypatch) -> FakeDb:
                  "set_admin", "get_admin_by_username", "remove_admin", "get_admins",
                  "set_bot_blocked", "get_alive_users", "get_alive_users_count", "get_blocked_users_count",
                  "count_liveness_users", "get_liveness_user_ids", "apply_liveness_results",
-                 "create_liveness_check", "update_liveness_check", "get_last_completed_liveness_check"):
+                 "create_liveness_check", "update_liveness_check", "get_last_completed_liveness_check",
+                 "get_alive_user_ids", "create_broadcast", "get_broadcast", "get_running_broadcast",
+                 "get_last_broadcast", "update_broadcast"):
         monkeypatch.setattr(db, name, getattr(fake, name))
     return fake
 

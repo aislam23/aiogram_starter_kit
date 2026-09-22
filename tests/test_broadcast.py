@@ -201,3 +201,32 @@ async def test_confirm_broadcast_answers_callback_before_sending(harness, admin,
     started_at = next(i for i, c in enumerate(harness.calls) if isinstance(c, EditMessageText) and "запущена" in (c.text or ""))
     assert answered_at < started_at, "callback.answer() должен идти до запуска рассылки"
     assert order == ["broadcast"]
+
+
+# --- FakeDb: рассылки и курсор живых --------------------------------------
+
+
+async def test_fake_db_alive_user_ids_cursor_skips_blocked(fake_db):
+    for uid in (1, 2, 3, 4):
+        await fake_db.add_user(uid)
+    await fake_db.set_bot_blocked(2, True)
+
+    assert await fake_db.get_alive_user_ids(0, 2) == [1, 3]
+    assert await fake_db.get_alive_user_ids(3, 2) == [4]
+    assert await fake_db.get_alive_user_ids(4, 2) == []
+
+
+async def test_fake_db_broadcast_lifecycle(fake_db):
+    bid = await fake_db.create_broadcast(created_by=777, content="{}", button_text=None, button_url=None, total=5)
+
+    row = await fake_db.get_running_broadcast()
+    assert row is not None and row.id == bid and row.status == "running" and row.finished_at is None
+
+    await fake_db.update_broadcast(bid, last_user_id=3, sent=3, failed=0, blocked=0)
+    assert (await fake_db.get_broadcast(bid)).last_user_id == 3
+    assert (await fake_db.get_running_broadcast()).id == bid  # без статуса — всё ещё running
+
+    await fake_db.update_broadcast(bid, last_user_id=5, sent=4, failed=0, blocked=1, status="done")
+    assert await fake_db.get_running_broadcast() is None
+    last = await fake_db.get_last_broadcast()
+    assert (last.status, last.sent, last.blocked) == ("done", 4, 1) and last.finished_at is not None

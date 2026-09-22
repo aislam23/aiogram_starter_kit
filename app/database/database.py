@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config import settings
 
 from .migrations import MigrationManager
-from .models import Base, BotStats, LivenessCheck, MigrationHistory, User
+from .models import BROADCAST_FINAL_STATUSES, Base, BotStats, Broadcast, LivenessCheck, MigrationHistory, User
 
 
 class Database:
@@ -303,6 +303,63 @@ class Database:
                 .limit(1)
             )
             return result.scalar_one_or_none()
+
+    # ==================== Рассылки (BroadcastService) ====================
+
+    async def get_alive_user_ids(self, after_id: int, limit: int) -> List[int]:
+        """Очередная пачка id живых получателей рассылки (курсор по id)"""
+        async with self.session_maker() as session:
+            result = await session.execute(
+                select(User.id)
+                .where(*self._alive_clause(), User.id > after_id)
+                .order_by(User.id)
+                .limit(limit)
+            )
+            return result.scalars().all()
+
+    async def create_broadcast(
+        self, *, created_by: int, content: str, button_text: Optional[str], button_url: Optional[str], total: int
+    ) -> int:
+        """Создать запись рассылки со статусом running, вернуть её id"""
+        async with self.session_maker() as session:
+            row = Broadcast(
+                created_by=created_by, content=content, button_text=button_text, button_url=button_url, total=total
+            )
+            session.add(row)
+            await session.commit()
+            return row.id
+
+    async def get_broadcast(self, broadcast_id: int) -> Optional[Broadcast]:
+        async with self.session_maker() as session:
+            return await session.get(Broadcast, broadcast_id)
+
+    async def get_running_broadcast(self) -> Optional[Broadcast]:
+        """Незавершённая рассылка — кандидат на возобновление после рестарта (инвариант: не больше одной)"""
+        async with self.session_maker() as session:
+            result = await session.execute(
+                select(Broadcast).where(Broadcast.status == "running").order_by(Broadcast.id.desc()).limit(1)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_last_broadcast(self) -> Optional[Broadcast]:
+        """Последняя рассылка (любой статус) — для панели /admin"""
+        async with self.session_maker() as session:
+            result = await session.execute(select(Broadcast).order_by(Broadcast.id.desc()).limit(1))
+            return result.scalar_one_or_none()
+
+    async def update_broadcast(
+        self, broadcast_id: int, *, last_user_id: int, sent: int, failed: int, blocked: int,
+        status: Optional[str] = None,
+    ) -> None:
+        """Чекпоинт: курсор и счётчики; финальный статус проставляет finished_at"""
+        values = dict(last_user_id=last_user_id, sent=sent, failed=failed, blocked=blocked)
+        if status is not None:
+            values["status"] = status
+            if status in BROADCAST_FINAL_STATUSES:
+                values["finished_at"] = datetime.now(UTC)
+        async with self.session_maker() as session:
+            await session.execute(update(Broadcast).where(Broadcast.id == broadcast_id).values(**values))
+            await session.commit()
 
     async def get_migration_history(self) -> List[MigrationHistory]:
         """Получение истории миграций"""

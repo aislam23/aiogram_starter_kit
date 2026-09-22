@@ -310,7 +310,8 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
         await asyncio.wait({task})
         if task.cancelled():
             result = broadcast.last_result  # run() дописывает итог в finally перед raise
-            if result is not None and result.status != "running":  # running — бот выключается, итог после рестарта
+            # чужой итог (гонка с другой рассылкой) или running — бот выключается, итог после рестарта
+            if result is not None and result.broadcast_id == broadcast_id and result.status != "running":
                 await reporter.finish(format_broadcast_result(result), AdminKeyboards.broadcast_done())
         elif (exc := task.exception()) is not None:
             logger.opt(exception=exc).error("❌ Broadcast crashed")

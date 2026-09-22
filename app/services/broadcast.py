@@ -6,7 +6,8 @@ Telegram допускает ~30 сообщений/с суммарно по вс
 глобальная. Получатели читаются курсором пачками (память постоянная); каждые CHECKPOINT_EVERY
 отправок курсор и счётчики пишутся в строку broadcasts. При старте бота незавершённая рассылка
 (status=running) продолжается с курсора (resume_pending); при kill -9 до CHECKPOINT_EVERY
-получателей могут получить сообщение дважды — при штатном SIGTERM курсор точный.
+получателей могут получить сообщение дважды; при штатном SIGTERM — не больше одного дубля
+(отмена может прийти после доставки, до сдвига курсора).
 
 Контент — JSON исходного сообщения админа (Message.model_dump_json), отправка через send_copy.
 Текст/подпись подменяются на html_text без entities: CustomEmojiMiddleware не трогает текст
@@ -37,6 +38,9 @@ BATCH_SIZE = 500            # id получателей на один запро
 CHECKPOINT_EVERY = 50       # отправок между записями курсора в БД
 PROGRESS_EVERY_SECONDS = 5  # не чаще — колбэк прогресса (он редактирует сообщение админа)
 MAX_RETRIES = 3             # попыток отправки одному получателю всего (как в liveness), не повторов
+# Столько одинаковых «failed» подряд — проблема в контенте (битый file_id, слишком длинный текст), а не в
+# получателях: без стопа 150 000 × failed ≈ 2 ч впустую, и админ узнаёт об этом только из итога
+MAX_CONSECUTIVE_FAILURES = 20
 
 Verdict = Literal["sent", "blocked", "failed"]
 
@@ -184,6 +188,8 @@ class BroadcastService:
         self.last_result: Optional[BroadcastProgress] = None
         self._stop_requested = False   # stop() из админки → stopped; отмена без него (shutdown) → running
         self._error_kinds: Counter = Counter()  # что именно ломалось в текущей рассылке
+        self._consecutive_failures = 0                # «failed» подряд с одним и тем же видом ошибки
+        self._last_failure_kind: Optional[str] = None  # вид последней ошибки «failed» (из _send)
 
     def configure(self, bot: Bot) -> None:
         self.bot = bot
@@ -269,6 +275,8 @@ class BroadcastService:
         self.last_result = None  # чтобы наблюдатель не показал итог прошлой рассылки
         self._stop_requested = False
         self._error_kinds = Counter()
+        self._consecutive_failures = 0
+        self._last_failure_kind = None
         row = await db.get_broadcast(broadcast_id)
         if row is None or row.status != "running":
             raise RuntimeError(f"Рассылка #{broadcast_id} не найдена или уже завершена")
@@ -298,9 +306,11 @@ class BroadcastService:
                     await asyncio.sleep(max(0.0, next_at - time.monotonic()))
                     next_at = max(next_at, time.monotonic()) + delay
 
-                    progress.count(await self._send(uid, message, keyboard))
+                    verdict = await self._send(uid, message, keyboard)
+                    progress.count(verdict)
                     after_id = uid
                     since_checkpoint += 1
+                    self._track_failure_streak(verdict, broadcast_id)
 
                     if since_checkpoint >= CHECKPOINT_EVERY:
                         await self._checkpoint(progress, after_id)
@@ -346,6 +356,30 @@ class BroadcastService:
             blocked=progress.blocked, status=status,
         )
 
+    def _track_failure_streak(self, verdict: Verdict, broadcast_id: int) -> None:
+        """Серия одинаковых «failed» подряд → RuntimeError, run() закончится со status=failed.
+
+        Один и тот же вид ошибки у всех подряд означает, что сломан контент, а не получатели.
+        Серию считает _note_failure(); любой другой вердикт её обрывает.
+        """
+        if verdict != "failed":
+            self._consecutive_failures = 0
+            self._last_failure_kind = None
+            return
+        if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            kind = self._last_failure_kind
+            logger.error(f"❌ Broadcast #{broadcast_id}: {self._consecutive_failures} одинаковых ошибок подряд: {kind}")
+            raise RuntimeError(f"{self._consecutive_failures} одинаковых ошибок подряд: {kind}")
+
+    def _note_failure(self, kind: str) -> None:
+        """Учесть «failed»: вид ошибки в сводку и в серию одинаковых подряд"""
+        self._error_kinds[kind] += 1
+        if kind == self._last_failure_kind:
+            self._consecutive_failures += 1
+        else:
+            self._last_failure_kind = kind
+            self._consecutive_failures = 1
+
     def _errors_summary(self) -> str:
         """Топ-5 видов ошибок — чтобы не разбирать логи по одному получателю"""
         if not self._error_kinds:
@@ -370,14 +404,14 @@ class BroadcastService:
                 if "chat not found" in text or "user is deactivated" in text:
                     await self._mark_blocked(user_id)
                     return "blocked"
-                self._error_kinds[f"BadRequest:{e.message[:60]}"] += 1
+                self._note_failure(f"BadRequest:{e.message[:60]}")
                 logger.debug(f"📤 broadcast: ошибка отправки {user_id}: {e}")
                 return "failed"
             except Exception as e:
-                self._error_kinds[type(e).__name__] += 1
+                self._note_failure(type(e).__name__)
                 logger.debug(f"📤 broadcast: ошибка отправки {user_id}: {e}")
                 return "failed"
-        self._error_kinds["RetryAfter:exhausted"] += 1
+        self._note_failure("RetryAfter:exhausted")
         logger.debug(f"📤 broadcast: {user_id} пропущен — {MAX_RETRIES} флуд-лимита подряд")
         return "failed"
 
@@ -408,7 +442,8 @@ def format_broadcast_progress(progress: BroadcastProgress) -> str:
 
 def format_broadcast_result(result: BroadcastProgress) -> str:
     """Итог рассылки для админа (сообщение прогресса или уведомление после возобновления)"""
-    success = int(result.sent * 100 / result.total) if result.total else 0
+    # total фиксируется при создании, а курсор подхватывает и зарегистрировавшихся во время рассылки
+    success = min(100, int(result.sent * 100 / result.total)) if result.total else 0
     lines = [STATUS_TITLES.get(result.status, STATUS_TITLES["failed"]), ""]
     if result.status == "stopped":
         lines.append(f"Остановлена на <b>{result.processed}</b> из {result.total}")

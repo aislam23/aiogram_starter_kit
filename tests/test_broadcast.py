@@ -19,6 +19,7 @@ from aiogram.types import Chat, Message, MessageEntity, PhotoSize, Sticker, User
 from app.handlers.admin import admin as admin_handlers
 from app.keyboards import AdminKeyboards
 from app.services.broadcast import (
+    MAX_CONSECUTIVE_FAILURES,
     MAX_RETRIES,
     BroadcastProgress,
     BroadcastService,
@@ -442,6 +443,34 @@ async def test_run_fails_fast_on_unsupported_message_type(fake_db, sleeps):
 
     assert bot.chat_ids == []  # не 3 «failed» по одному, а сразу стоп
     assert fake_db.broadcasts[bid].status == "failed"
+
+
+async def test_run_aborts_after_consecutive_identical_failures(fake_db, sleeps):
+    """Одна и та же ошибка у всех подряд — проблема в контенте, а не в получателях: стоп, а не 150 000 «failed»."""
+    for uid in range(1, 31):
+        await fake_db.add_user(uid)
+    bot = FakeBot({uid: [bad_request("wrong file identifier")] for uid in range(1, 31)})
+    bid = await _new_broadcast(fake_db)
+
+    with pytest.raises(RuntimeError):
+        await _service(bot).run(bid)
+
+    assert len(bot.chat_ids) == MAX_CONSECUTIVE_FAILURES
+    assert fake_db.broadcasts[bid].status == "failed"
+
+
+async def test_run_continues_on_mixed_failures(fake_db, sleeps):
+    """Разные ошибки подряд — это получатели, а не контент: рассылка идёт до конца."""
+    for uid in range(1, 31):
+        await fake_db.add_user(uid)
+    texts = ("wrong file identifier", "message is too long")
+    bot = FakeBot({uid: [bad_request(texts[uid % 2])] for uid in range(1, 31)})
+    bid = await _new_broadcast(fake_db)
+
+    result = await _service(bot).run(bid)
+
+    assert (result.status, result.failed) == ("done", 30)
+    assert fake_db.broadcasts[bid].status == "done"
 
 
 async def test_run_refuses_finished_broadcast(fake_db, sleeps):

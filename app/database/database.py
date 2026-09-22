@@ -239,7 +239,7 @@ class Database:
                 .order_by(User.id)
                 .limit(limit)
             )
-            return result.scalars().all()
+            return list(result.scalars().all())
 
     async def apply_liveness_results(
         self, checked_ids: List[int], alive_ids: List[int], blocked_ids: List[int]
@@ -315,7 +315,7 @@ class Database:
                 .order_by(User.id)
                 .limit(limit)
             )
-            return result.scalars().all()
+            return list(result.scalars().all())
 
     async def create_broadcast(
         self, *, created_by: int, content: str, button_text: Optional[str], button_url: Optional[str], total: int

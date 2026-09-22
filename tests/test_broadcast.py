@@ -266,7 +266,7 @@ async def test_send_counts_other_bad_request_as_failed(fake_db, sleeps):
     service = _service(bot)
 
     assert await service._send(42, text_message(), None) == "failed"
-    assert list(service._error_kinds) == ["BadRequest:Telegram server says - Bad Request: wron"]
+    assert list(service._error_kinds) == ["BadRequest:Bad Request: wrong file identifier"]
 
 
 # --- confirm_broadcast: FSM очищается при любом исходе ----------------------

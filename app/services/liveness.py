@@ -254,7 +254,7 @@ class LivenessService:
                 text = str(e).lower()
                 if "chat not found" in text or "user is deactivated" in text:
                     return "deleted"
-                self._error_kinds[f"BadRequest:{str(e)[:40]}"] += 1
+                self._error_kinds[f"BadRequest:{e.message[:60]}"] += 1
                 logger.debug(f"🩺 liveness: неожиданный BadRequest для {user_id}: {e}")
                 return "error"
             except Exception as e:

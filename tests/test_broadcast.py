@@ -109,8 +109,18 @@ def sleeps(monkeypatch) -> list[float]:
     return calls
 
 
+async def _cancel_all(tasks: set[asyncio.Task]) -> None:
+    """Отменить незавершённые задачи и дождаться их — хвост упавшего теста не должен уходить в следующий."""
+    pending = [t for t in tasks if not t.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.wait(pending, timeout=1)
+    tasks.clear()
+
+
 @pytest.fixture
-def fresh_broadcast():
+async def fresh_broadcast():
     """Глобальный сервис общий на процесс — сбрасываем между тестами."""
     def _reset() -> None:
         broadcast._task, broadcast.progress, broadcast.last_result = None, None, None
@@ -118,13 +128,24 @@ def fresh_broadcast():
 
     _reset()
     yield broadcast
+    task = broadcast._task
+    if task is not None and not task.done():
+        task.cancel()
+        await asyncio.wait({task}, timeout=1)
+    await _cancel_all(broadcast_module._watchers)
+    await _cancel_all(admin_handlers._watchers)
     _reset()
 
 
+async def _drain(watchers: set[asyncio.Task]) -> None:
+    """Дождаться наблюдателей с таймаутом — зависший наблюдатель роняет тест, а не сессию."""
+    if watchers:
+        await asyncio.wait_for(asyncio.gather(*list(watchers)), timeout=2)
+
+
 async def _drain_watchers() -> None:
-    """Дождаться наблюдателей (они дописывают итог после задачи рассылки)."""
-    for watcher in list(broadcast_module._watchers):
-        await watcher
+    """Дождаться наблюдателей сервиса (они дописывают итог после задачи рассылки)."""
+    await _drain(broadcast_module._watchers)
 
 
 async def no_sleep(_seconds: float) -> None:
@@ -680,8 +701,8 @@ async def _arm_confirm_state(harness, admin, text: str = "Текст рассы�
 
 
 async def _drain_handler_watchers() -> None:
-    for watcher in list(admin_handlers._watchers):
-        await watcher
+    """Дождаться наблюдателей из confirm_broadcast (они дописывают итог в сообщение админа)."""
+    await _drain(admin_handlers._watchers)
 
 
 async def test_receive_broadcast_message_stores_json_string(harness, admin):

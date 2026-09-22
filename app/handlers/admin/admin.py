@@ -3,6 +3,8 @@
 """
 import asyncio
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
@@ -10,6 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from loguru import logger
 
+from app.config import settings
 from app.database import db
 from app.filters import IsAdmin
 from app.keyboards import AdminKeyboards
@@ -31,6 +34,11 @@ router = Router()
 _watchers: set[asyncio.Task] = set()
 
 
+def fmt_local(dt: datetime, fmt: str) -> str:
+    """Время в часовом поясе бота (settings.timezone), а не в UTC из БД"""
+    return dt.astimezone(ZoneInfo(settings.timezone)).strftime(fmt)
+
+
 async def _show_broadcast_running(callback: CallbackQuery) -> None:
     """Экран текущей рассылки"""
     if broadcast.progress is not None:
@@ -48,7 +56,7 @@ async def broadcast_status_line() -> str:
     last = await db.get_last_broadcast()
     if last is None:
         return "📤 Рассылок ещё не было"
-    when = (last.finished_at or last.created_at).strftime("%d.%m %H:%M")
+    when = fmt_local(last.finished_at or last.created_at, "%d.%m %H:%M")
     return f"📤 Последняя рассылка: <b>{when}</b> — {STATUS_LABELS.get(last.status, last.status)}, {last.sent} / {last.total}"
 
 
@@ -94,7 +102,7 @@ async def admin_panel_text() -> str:
     total_users = await db.get_users_count()
     alive_users = await db.get_alive_users_count()
     blocked_users = await db.get_blocked_users_count()
-    last_restart = stats.last_restart.strftime("%d.%m.%Y %H:%M:%S")
+    last_restart = fmt_local(stats.last_restart, "%d.%m.%Y %H:%M:%S")
 
     return f"""
 🔧 <b>Админская панель</b>
@@ -266,17 +274,20 @@ async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot
         await callback.answer("Идёт проверка живых — дождитесь её окончания", show_alert=True)
         return
 
+    # Отвечаем на callback сразу: рассылка идёт долго, а callback query протухает через несколько секунд.
+    # State чистим сразу же — хендлер больше не ждёт конца рассылки. Оба вызова — ДО записи строки в БД:
+    # они могут упасть (query too old, Redis), а строка running без задачи — это «зомби»,
+    # которую resume_pending() поднимет после рестарта
+    await callback.answer()
+    await state.clear()
+
     broadcast_id = await db.create_broadcast(
         created_by=callback.from_user.id, content=content,
         button_text=data.get("button_text"), button_url=data.get("button_url"),
         total=await db.get_alive_users_count(),
     )
 
-    # Отвечаем на callback сразу: рассылка идёт долго, а callback query протухает через несколько секунд.
-    # State чистим сразу же — хендлер больше не ждёт конца рассылки
-    await callback.answer()
-    await state.clear()
-
+    # Между вставкой строки и start() — только sync configure() и update(), который глотает исключения
     broadcast.configure(bot)
     reporter = ProgressReporter(callback.message)
 

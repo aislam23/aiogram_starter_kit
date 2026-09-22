@@ -879,7 +879,7 @@ Expected: FAILED — `AttributeError: 'BroadcastService' object has no attribute
 from app.keyboards import AdminKeyboards
 ```
 
-и перед ним `from app.config import settings` (по алфавиту: `app.config`, `app.database`, `app.keyboards`). Служебный комментарий про отложенные импорты из задачи 2 можно удалить.
+и перед ним `from app.config import settings` (по алфавиту: `app.config`, `app.database`, `app.keyboards`). Служебный комментарий про отложенные импорты из задачи 2 удалить, оставив **ровно одну** пустую строку между импортами и `BATCH_SIZE = 500` (две дают ruff I001).
 
 В `BroadcastService` после `configure` добавить:
 

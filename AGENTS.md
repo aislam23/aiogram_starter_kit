@@ -30,7 +30,7 @@
 | FSM | `app/states/` | `StatesGroup` для многошаговых сценариев; хранилище — Redis |
 | Клавиатуры | `app/keyboards/` | Inline-клавиатуры через `InlineKeyboardBuilder` |
 | Иконки | `app/ui/icons.py`, `app/middlewares/custom_emoji.py` | Custom emoji из пака tgiosicons: в коде — обычные эмодзи из `SUPPORTED_EMOJI`, middleware конвертирует на выходе; без Premium у владельца — обычные эмодзи автоматически |
-| Сервисы | `app/services/` | Логика, не зависящая от aiogram: `broadcast.py` (рассылка, `ProgressReporter`), `liveness.py` (проверка живых пользователей + ночной планировщик) |
+| Сервисы | `app/services/` | Логика, не зависящая от aiogram: `broadcast.py` (рассылка: фон, курсор по id, чекпоинты в `broadcasts`, возобновление после рестарта; `ProgressReporter`), `liveness.py` (проверка живых + ночной планировщик), `admins.py` (`notify_admins`) |
 | БД | `app/database/` | SQLAlchemy async + asyncpg; `db` — синглтон с методами |
 | Миграции | `app/database/migrations/versions/` | Свои классы `Migration`, применяются при старте |
 | Логи | `logs/bot.jsonl` | JSON Lines, секреты замаскированы |
@@ -206,7 +206,7 @@ async def test_button(harness, user):
 
 - `is_active` — учётная активность (сбрасывать в `False` можно, например, при бане админом);
 - `bot_blocked` — пользователь заблокировал бота или удалил аккаунт. Ставится тремя путями:
-  `my_chat_member` (`app/handlers/chat_member.py`, мгновенно), 403 при рассылке (`BroadcastService`),
+  `my_chat_member` (`app/handlers/chat_member.py`, мгновенно), 403 при рассылке (`broadcast`, §4.14),
   прогон проверки живых (`LivenessService`, кнопка «🩺 Проверить живых» в `/admin` и ночной автопрогон
   раз в `LIVENESS_CHECK_INTERVAL_DAYS` дней). Снимается, когда пользователь снова пишет боту.
 
@@ -236,12 +236,32 @@ Telegram иконки не примет — middleware это заметит и 
 - Кнопка из одного эмодзи (`◀️`) остаётся как есть: без текста Telegram кнопку отвергнет.
 - Выключить совсем: `CUSTOM_EMOJI=off` в `.env`.
 
+### 4.14 Массовая отправка (рассылка)
+
+Рассылка (`app/services/broadcast.py`, синглтон `broadcast`) — образец любой массовой отправки:
+
+- получатели читаются курсором по `users.id` (`db.get_alive_user_ids(after_id, limit)`), не `get_alive_users()` целиком;
+- отправка последовательная с ровным темпом `BROADCAST_RATE_LIMIT_RPS` (по умолчанию 20/с; Telegram даёт ~30/с
+  суммарно, остаток — на обычные ответы бота);
+- на 429 (`TelegramRetryAfter`) ждём **весь** `retry_after` — поток один, пауза глобальная;
+- каждые 50 отправок курсор и счётчики пишутся в `broadcasts`; при старте бота `broadcast.resume_pending()`
+  продолжает незавершённую рассылку (`status=running`), итог уходит админам через `notify_admins`;
+- одновременно идёт не больше одной рассылки, и не вместе с проверкой живых (`liveness`).
+
+Контент хранится как `Message.model_dump_json()` и отправляется через `Message.send_copy()`; текст/подпись
+подменяются на `html_text` без `entities`, чтобы `CustomEmojiMiddleware` превратил эмодзи в иконки (§4.13).
+В FSM-состояние кладётся **строка JSON**, не объект `Message` — `RedisStorage` хранит данные через `json.dumps`.
+
+Нужна своя массовая отправка (например, уведомление сегменту)? Не пиши цикл `bot.send_*` по всем пользователям —
+сделай запись в `broadcasts` и вызови `broadcast.start(id)`, либо повтори тот же паттерн: курсор + темп +
+честный `retry_after` + чекпоинты.
+
 ## 5. Чего не делать
 
 - Не читать и не выводить `.env`, `.env.prod`, `logs/` целиком в чат. Токен — только маскированно.
 - Не хранить состояние в глобальных переменных: есть FSM (Redis) и БД.
 - Не вызывать `db.*` в `keyboards/` или `states/`. Данные — в хендлерах и сервисах.
-- Не отправлять сообщения в цикле без задержек: Telegram ограничивает ~30 сообщений/сек (см. `BroadcastService`).
+- Не отправлять сообщения в цикле по всем пользователям через `bot.send_*`: Telegram ограничивает ~30 сообщений/сек и банит за всплески. Рассылка — только через `broadcast` (§4.14).
 - Не слать рассылки по `get_active_users()` / всем подряд: заблокировавшие бота дают 403 и тратят лимит. Только `get_alive_users()`.
 - Не редактировать одно сообщение прогресса на каждом шаге долгого цикла: Telegram включает flood control на `editMessageText`, экран замирает, а финальный отчёт не доходит. Используй `ProgressReporter` из `app/services/broadcast.py` (троттлинг + устойчивый финал).
 - Не менять `check_can_apply` уже применённых миграций.

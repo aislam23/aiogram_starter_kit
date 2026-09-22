@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     liveness_check_interval_days: int = Field(7, alias="LIVENESS_CHECK_INTERVAL_DAYS")
     # Запросов в секунду во время прогона (делит лимит Telegram ~30/с с живым трафиком)
     liveness_rate_limit_rps: int = Field(15, alias="LIVENESS_RATE_LIMIT_RPS")
+    # Рассылка (app/services/broadcast.py): сообщений в секунду. Telegram допускает ~30/с суммарно,
+    # оставляем запас на обычные ответы бота. 150 000 получателей при 20/с ≈ 2 ч
+    broadcast_rate_limit_rps: int = Field(20, alias="BROADCAST_RATE_LIMIT_RPS")
 
     # Local Bot API settings
     use_local_api: bool = Field(False, alias="USE_LOCAL_API")

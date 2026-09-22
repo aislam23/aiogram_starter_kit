@@ -1,16 +1,43 @@
 """
-Сервис рассылки сообщений
+Рассылка: фоновая задача с ровным темпом, курсором по users.id и возобновлением после рестарта.
+
+Telegram допускает ~30 сообщений/с суммарно по всем чатам. Отправляем последовательно, темп задаём
+до запроса (BROADCAST_RATE_LIMIT_RPS); на 429 ждём весь retry_after — поток один, поэтому пауза
+глобальная. Получатели читаются курсором пачками (память постоянная); каждые CHECKPOINT_EVERY
+отправок курсор и счётчики пишутся в строку broadcasts. При старте бота незавершённая рассылка
+(status=running) продолжается с курсора (resume_pending); при kill -9 до CHECKPOINT_EVERY
+получателей могут получить сообщение дважды — при штатном SIGTERM курсор точный.
+
+Контент — JSON исходного сообщения админа (Message.model_dump_json), отправка через send_copy.
+Текст/подпись подменяются на html_text без entities: CustomEmojiMiddleware не трогает текст
+с явными entities, а так эмодзи становятся иконками и форматирование сохраняется.
+
+ProgressReporter — общий для долгих операций (рассылка, проверка живых) троттлинг правок прогресса.
 """
 import asyncio
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional
+from collections import Counter
+from dataclasses import dataclass, field
+from datetime import timedelta
+from typing import Any, Awaitable, Callable, Dict, Literal, Optional
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.methods import SendMessage, TelegramMethod
 from aiogram.types import InlineKeyboardMarkup, Message
 from loguru import logger
 
 from app.database import db
+
+# Импорты settings, AdminKeyboards (задача 3), notify_admins, liveness (задача 4) добавляются там,
+# где появляется использующий их код — иначе ruff F401 и красный just check на промежуточных коммитах
+
+BATCH_SIZE = 500            # id получателей на один запрос к БД
+CHECKPOINT_EVERY = 50       # отправок между записями курсора в БД
+PROGRESS_EVERY_SECONDS = 5  # не чаще — колбэк прогресса (он редактирует сообщение админа)
+MAX_RETRIES = 3             # попыток отправки одному получателю всего (как в liveness), не повторов
+
+Verdict = Literal["sent", "blocked", "failed"]
 
 
 class ProgressReporter:
@@ -87,14 +114,97 @@ class ProgressReporter:
         return False
 
 
+@dataclass
+class BroadcastProgress:
+    broadcast_id: int
+    total: int
+    sent: int = 0
+    failed: int = 0
+    blocked: int = 0
+    status: str = "running"  # после завершения: done / stopped / failed; running — прервана рестартом
+    started_at: float = field(default_factory=time.monotonic)
+    finished_at: Optional[float] = None
+
+    @property
+    def processed(self) -> int:
+        return self.sent + self.failed + self.blocked
+
+    @property
+    def percent(self) -> int:
+        return min(100, self.processed * 100 // self.total) if self.total else 100
+
+    @property
+    def elapsed(self) -> timedelta:
+        end = self.finished_at if self.finished_at is not None else time.monotonic()
+        return timedelta(seconds=int(end - self.started_at))
+
+
+ProgressCallback = Callable[[BroadcastProgress], Awaitable[None]]
+
+
+def build_send_method(message: Message, chat_id: int, keyboard: Optional[InlineKeyboardMarkup]) -> TelegramMethod:
+    """Send* по типу сообщения. Текст/подпись — как HTML без entities, чтобы сработали иконки.
+
+    TypeError от send_copy (тип не поддерживается) не ловим: он одинаков для всех получателей
+    и должен уронить рассылку целиком, а не дать 150 000 «failed».
+    """
+    method = message.send_copy(chat_id=chat_id, reply_markup=keyboard)
+    if isinstance(method, SendMessage):
+        return method.model_copy(update={"text": message.html_text, "entities": None, "parse_mode": "HTML"})
+    if getattr(method, "caption", None) is not None:
+        return method.model_copy(update={"caption": message.html_text, "caption_entities": None, "parse_mode": "HTML"})
+    return method
+
+
 class BroadcastService:
-    """Сервис для рассылки сообщений"""
+    """Одна рассылка за раз (в рамках процесса); синглтон `broadcast`, configure(bot) в main.py"""
 
-    # Сколько раз повторять отправку одному пользователю после flood-wait (429)
-    MAX_RETRIES = 3
-
-    def __init__(self, bot: Bot):
+    def __init__(self, bot: Optional[Bot] = None):
         self.bot = bot
+        self._task: Optional[asyncio.Task] = None
+        self.progress: Optional[BroadcastProgress] = None   # текущая рассылка
+        self.last_result: Optional[BroadcastProgress] = None
+        self._stop_requested = False   # stop() из админки → stopped; отмена без него (shutdown) → running
+        self._error_kinds: Counter = Counter()  # что именно ломалось в текущей рассылке
+
+    def configure(self, bot: Bot) -> None:
+        self.bot = bot
+
+    async def _send(self, user_id: int, message: Message, keyboard: Optional[InlineKeyboardMarkup]) -> Verdict:
+        """Одному получателю: 'sent' | 'blocked' | 'failed'. На 429 ждём весь retry_after."""
+        method = build_send_method(message, user_id, keyboard)
+        for _ in range(MAX_RETRIES):
+            try:
+                await self.bot(method)
+                return "sent"
+            except TelegramRetryAfter as e:
+                logger.warning(f"📤 broadcast: флуд-лимит Telegram, ждём {e.retry_after} с")
+                await asyncio.sleep(e.retry_after)
+            except TelegramForbiddenError:
+                await self._mark_blocked(user_id)
+                return "blocked"
+            except TelegramBadRequest as e:
+                text = str(e).lower()
+                if "chat not found" in text or "user is deactivated" in text:
+                    await self._mark_blocked(user_id)
+                    return "blocked"
+                self._error_kinds[f"BadRequest:{str(e)[:40]}"] += 1
+                logger.debug(f"📤 broadcast: ошибка отправки {user_id}: {e}")
+                return "failed"
+            except Exception as e:
+                self._error_kinds[type(e).__name__] += 1
+                logger.debug(f"📤 broadcast: ошибка отправки {user_id}: {e}")
+                return "failed"
+        self._error_kinds["RetryAfter:exhausted"] += 1
+        logger.debug(f"📤 broadcast: {user_id} пропущен — {MAX_RETRIES} флуд-лимита подряд")
+        return "failed"
+
+    async def _mark_blocked(self, user_id: int) -> None:
+        """Заблокировал бота или удалил аккаунт — больше не слать"""
+        try:
+            await db.set_bot_blocked(user_id, True)
+        except Exception as e:
+            logger.warning(f"Не удалось пометить {user_id} как заблокировавшего бота: {e}")
 
     async def send_broadcast(
         self,
@@ -183,21 +293,21 @@ class BroadcastService:
         Returns:
             True если сообщение отправлено успешно
         """
-        for attempt in range(self.MAX_RETRIES + 1):
+        for attempt in range(MAX_RETRIES + 1):
             try:
                 return await self._send_once(user_id, message, custom_keyboard)
             except TelegramRetryAfter as e:
                 # Flood-wait: Telegram просит подождать. Ждём и повторяем,
                 # иначе получатель молча выпал бы из рассылки.
-                if attempt >= self.MAX_RETRIES:
+                if attempt >= MAX_RETRIES:
                     logger.warning(
                         f"Пользователь {user_id}: flood-wait {e.retry_after}s, "
-                        f"попытки исчерпаны ({self.MAX_RETRIES})"
+                        f"попытки исчерпаны ({MAX_RETRIES})"
                     )
                     return False
                 logger.warning(
                     f"Пользователь {user_id}: flood-wait {e.retry_after}s, "
-                    f"повтор {attempt + 1}/{self.MAX_RETRIES}"
+                    f"повтор {attempt + 1}/{MAX_RETRIES}"
                 )
                 await asyncio.sleep(e.retry_after + 0.5)
         return False

@@ -1,21 +1,104 @@
 """
-Тесты рассылки: троттлинг прогресса, устойчивость к flood-wait, очистка FSM.
+Тесты рассылки: троттлинг прогресса, отправка с ровным темпом, flood-wait, чекпоинты,
+остановка и возобновление, экраны админки.
 
 Прогресс рассылки редактирует одно сообщение тысячи раз подряд — без троттлинга
 Telegram отвечает flood control, экран замирает, а финальный отчёт не доходит.
 """
+import asyncio
+import importlib
+from datetime import UTC, datetime
 from unittest.mock import patch
 
-from aiogram.exceptions import TelegramRetryAfter
-from aiogram.methods import EditMessageText, SendMessage
+import pytest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
+from aiogram.methods import EditMessageText, SendMessage, SendPhoto, SendSticker
+from aiogram.types import Chat, Message, MessageEntity, PhotoSize, Sticker, User
 
-from app.services.broadcast import BroadcastService, ProgressReporter
+from app.keyboards import AdminKeyboards
+from app.services.broadcast import MAX_RETRIES, BroadcastService, ProgressReporter, build_send_method
+
+broadcast_module = importlib.import_module("app.services.broadcast")
+_real_sleep = asyncio.sleep
 
 
 def retry_after(seconds: int) -> TelegramRetryAfter:
     return TelegramRetryAfter(
         method=SendMessage(chat_id=1, text="x"), message="Flood control exceeded", retry_after=seconds
     )
+
+
+def forbidden() -> TelegramForbiddenError:
+    return TelegramForbiddenError(method=SendMessage(chat_id=1, text="x"), message="Forbidden: bot was blocked by the user")
+
+
+def bad_request(text: str) -> TelegramBadRequest:
+    return TelegramBadRequest(method=SendMessage(chat_id=1, text="x"), message=f"Bad Request: {text}")
+
+
+_ADMIN = User(id=777, is_bot=False, first_name="Админ")
+_CHAT = Chat(id=777, type="private")
+
+
+def text_message(text: str = "привет", entities=None) -> Message:
+    return Message(message_id=1, date=datetime.now(UTC), chat=_CHAT, from_user=_ADMIN, text=text, entities=entities)
+
+
+def bold_message() -> Message:
+    """«жирный и <» с bold на первом слове: html_text даёт <b>жирный</b> и &lt;"""
+    return text_message("жирный и <", entities=[MessageEntity(type="bold", offset=0, length=6)])
+
+
+def photo_message(caption: str = "подпись") -> Message:
+    photo = PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)
+    return Message(message_id=1, date=datetime.now(UTC), chat=_CHAT, from_user=_ADMIN, photo=[photo], caption=caption)
+
+
+def sticker_message() -> Message:
+    sticker = Sticker(file_id="s", file_unique_id="su", type="regular", width=1, height=1, is_animated=False, is_video=False)
+    return Message(message_id=1, date=datetime.now(UTC), chat=_CHAT, from_user=_ADMIN, sticker=sticker)
+
+
+class FakeBot:
+    """Записывает отправленные методы; по сценарию бросает исключения на заданных chat_id."""
+
+    def __init__(self, fail: dict[int, list[Exception]] | None = None) -> None:
+        self.methods: list = []
+        self.fail = fail or {}  # chat_id -> очередь исключений, по одному на попытку
+
+    async def __call__(self, method):
+        self.methods.append(method)
+        queue = self.fail.get(method.chat_id)
+        if queue:
+            raise queue.pop(0)
+        return None
+
+    @property
+    def chat_ids(self) -> list[int]:
+        return [m.chat_id for m in self.methods]
+
+
+def _service(bot) -> BroadcastService:
+    service = BroadcastService()
+    service.configure(bot)
+    return service
+
+
+@pytest.fixture
+def sleeps(monkeypatch) -> list[float]:
+    """asyncio.sleep в модуле рассылки не ждёт, но записывает запрошенные интервалы."""
+    calls: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        calls.append(seconds)
+        await _real_sleep(0)  # уступить event loop
+
+    monkeypatch.setattr(broadcast_module.asyncio, "sleep", fake_sleep)
+    return calls
+
+
+async def no_sleep(_seconds: float) -> None:
+    pass
 
 
 class FakeProgressMessage:
@@ -34,10 +117,6 @@ class FakeProgressMessage:
 
     async def answer(self, text: str, reply_markup=None):
         self.answers.append(text)
-
-
-async def no_sleep(_seconds: float) -> None:
-    pass
 
 
 # --- ProgressReporter -------------------------------------------------------
@@ -99,47 +178,95 @@ async def test_progress_reporter_finish_falls_back_to_new_message():
     assert message.answers == ["итог"]
 
 
-# --- BroadcastService: повтор при flood-wait --------------------------------
+# --- build_send_method: Send* по типу сообщения, текст как HTML -------------
 
 
-class FakeBot:
-    def __init__(self, fail_times: int = 0) -> None:
-        self.fail_times = fail_times
-        self.sent: list[int] = []
+def test_build_send_method_text_uses_html_without_entities():
+    method = build_send_method(bold_message(), chat_id=5, keyboard=None)
 
-    async def send_message(self, chat_id: int, **kwargs):
-        if self.fail_times > 0:
-            self.fail_times -= 1
-            raise retry_after(3)
-        self.sent.append(chat_id)
+    assert isinstance(method, SendMessage)
+    assert method.chat_id == 5
+    assert method.text == "<b>жирный</b> и &lt;"
+    assert method.entities is None
+    assert method.parse_mode == "HTML"
 
 
-class FakeTextMessage:
-    text = "привет"
-    html_text = "привет"
-    photo = video = document = audio = voice = video_note = animation = sticker = None
+def test_build_send_method_caption_and_keyboard():
+    keyboard = AdminKeyboards.create_custom_button("Сайт", "https://example.com")
+
+    method = build_send_method(photo_message(), chat_id=5, keyboard=keyboard)
+
+    assert isinstance(method, SendPhoto)
+    assert method.photo == "f"
+    assert (method.caption, method.caption_entities, method.parse_mode) == ("подпись", None, "HTML")
+    assert method.reply_markup is keyboard
 
 
-async def test_send_single_message_retries_after_flood_wait():
-    bot = FakeBot(fail_times=1)
-    service = BroadcastService(bot)  # type: ignore[arg-type]
+def test_build_send_method_leaves_sticker_untouched():
+    method = build_send_method(sticker_message(), chat_id=5, keyboard=None)
 
-    with patch("app.services.broadcast.asyncio.sleep", no_sleep):
-        ok = await service._send_single_message(user_id=42, message=FakeTextMessage())  # type: ignore[arg-type]
-
-    assert ok is True
-    assert bot.sent == [42]
+    assert isinstance(method, SendSticker)
+    assert method.sticker == "s"
 
 
-async def test_send_single_message_gives_up_after_max_retries():
-    bot = FakeBot(fail_times=BroadcastService.MAX_RETRIES + 1)
-    service = BroadcastService(bot)  # type: ignore[arg-type]
+def test_build_send_method_works_after_json_round_trip():
+    restored = Message.model_validate_json(bold_message().model_dump_json())
 
-    with patch("app.services.broadcast.asyncio.sleep", no_sleep):
-        ok = await service._send_single_message(user_id=42, message=FakeTextMessage())  # type: ignore[arg-type]
+    assert build_send_method(restored, chat_id=1, keyboard=None).text == "<b>жирный</b> и &lt;"
 
-    assert ok is False
-    assert bot.sent == []
+
+def test_build_send_method_rejects_empty_message():
+    empty = Message(message_id=1, date=datetime.now(UTC), chat=_CHAT, from_user=_ADMIN)
+
+    with pytest.raises(TypeError):
+        build_send_method(empty, chat_id=1, keyboard=None)
+
+
+# --- _send: одна отправка с вердиктом ----------------------------------------
+
+
+async def test_send_waits_full_retry_after_and_retries(fake_db, sleeps):
+    bot = FakeBot({42: [retry_after(7)]})
+
+    verdict = await _service(bot)._send(42, text_message(), None)
+
+    assert verdict == "sent"
+    assert sleeps == [7]  # без урезания: меньше ждать — получить следующий 429
+    assert bot.chat_ids == [42, 42]
+
+
+async def test_send_gives_up_after_max_retries(fake_db, sleeps):
+    bot = FakeBot({42: [retry_after(1)] * MAX_RETRIES})
+    service = _service(bot)
+
+    assert await service._send(42, text_message(), None) == "failed"
+    assert len(bot.chat_ids) == MAX_RETRIES
+    assert sleeps == [1] * MAX_RETRIES
+    assert service._error_kinds["RetryAfter:exhausted"] == 1
+
+
+async def test_send_marks_blocked_on_forbidden(fake_db, sleeps):
+    await fake_db.add_user(42)
+    bot = FakeBot({42: [forbidden()]})
+
+    assert await _service(bot)._send(42, text_message(), None) == "blocked"
+    assert fake_db.users[42].bot_blocked is True
+
+
+async def test_send_treats_deleted_account_as_blocked(fake_db, sleeps):
+    await fake_db.add_user(42)
+    bot = FakeBot({42: [bad_request("chat not found")]})
+
+    assert await _service(bot)._send(42, text_message(), None) == "blocked"
+    assert fake_db.users[42].bot_blocked is True
+
+
+async def test_send_counts_other_bad_request_as_failed(fake_db, sleeps):
+    bot = FakeBot({42: [bad_request("wrong file identifier")]})
+    service = _service(bot)
+
+    assert await service._send(42, text_message(), None) == "failed"
+    assert list(service._error_kinds) == ["BadRequest:Telegram server says - Bad Request: wron"]
 
 
 # --- confirm_broadcast: FSM очищается при любом исходе ----------------------

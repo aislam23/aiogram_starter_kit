@@ -850,3 +850,22 @@ async def test_fake_db_broadcast_lifecycle(fake_db):
     assert await fake_db.get_running_broadcast() is None
     last = await fake_db.get_last_broadcast()
     assert (last.status, last.sent, last.blocked) == ("done", 4, 1) and last.finished_at is not None
+
+
+# --- сквозной: CustomEmojiMiddleware конвертирует эмодзи в тексте рассылки ------
+
+
+async def test_broadcast_text_gets_custom_emoji_icons(harness, admin, fake_db, fresh_broadcast, monkeypatch):
+    harness.premium("on")
+    await fake_db.add_user(1)
+    await _arm_confirm_state(harness, admin, text="📤 Новости")
+    monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 1000)
+
+    await harness.send_callback("broadcast_confirm_yes", admin)
+    await fresh_broadcast.wait(timeout=1)
+    await _drain_handler_watchers()
+
+    delivered = next(c for c in harness.calls if isinstance(c, SendMessage) and c.chat_id == 1)
+    assert "<tg-emoji" in delivered.text and "Новости" in delivered.text
+    assert delivered.parse_mode == "HTML"
+    assert fake_db.broadcasts[1].status == "done"

@@ -19,6 +19,7 @@ from app.database import db
 from app.handlers import setup_routers
 from app.middlewares import setup_middlewares
 from app.middlewares.custom_emoji import CustomEmojiMiddleware, custom_emoji_status
+from app.services.broadcast import broadcast
 from app.services.liveness import liveness
 from app.utils import register_secret, setup_logging
 
@@ -114,6 +115,10 @@ async def on_startup(bot: Bot) -> None:
 
     # Проверка живых пользователей: ручной запуск из /admin и ночной автопрогон
     liveness.configure(bot)
+    # Рассылка, прерванная рестартом, продолжается с курсора — ДО планировщика liveness,
+    # иначе ночной автопрогон может занять слот и рассылка останется ждать следующего рестарта
+    broadcast.configure(bot)
+    await broadcast.resume_pending()
     if settings.liveness_check_interval_days > 0:
         _liveness_scheduler_task = asyncio.create_task(liveness.run_scheduler(), name="liveness-scheduler")
 
@@ -121,6 +126,10 @@ async def on_startup(bot: Bot) -> None:
 async def on_shutdown(bot: Bot) -> None:
     """Действия при остановке бота"""
     logger.info("🛑 Bot is shutting down...")
+
+    # Рассылку прерываем без stop(): статус в БД остаётся running, после рестарта продолжится с курсора
+    if broadcast.stop_for_shutdown():
+        await broadcast.wait(timeout=10)
 
     # Останавливаем прогон проверки живых (если идёт) и планировщик; ждём, чтобы пачка и итог записались
     if liveness.stop():

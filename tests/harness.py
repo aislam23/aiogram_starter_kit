@@ -307,6 +307,12 @@ class BotHarness:
         ctx = self.dp.fsm.get_context(self.bot, chat_id=user.id, user_id=user.id)
         return await ctx.get_state()
 
+    async def data_of(self, user: Optional[User] = None) -> dict:
+        """Данные FSM пользователя."""
+        user = user or make_user()
+        ctx = self.dp.fsm.get_context(self.bot, chat_id=user.id, user_id=user.id)
+        return await ctx.get_data()
+
 
 def buttons_of(method: TelegramMethod[Any]) -> List[str]:
     """Тексты inline-кнопок из отправленного сообщения."""

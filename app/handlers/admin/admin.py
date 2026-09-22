@@ -1,6 +1,7 @@
 """
 Админские хендлеры
 """
+import asyncio
 import re
 
 from aiogram import Bot, F, Router
@@ -13,10 +14,42 @@ from app.database import db
 from app.filters import IsAdmin
 from app.keyboards import AdminKeyboards
 from app.middlewares.custom_emoji import custom_emoji_status
-from app.services import BroadcastService, ProgressReporter
+from app.services.broadcast import (
+    STATUS_LABELS,
+    BroadcastProgress,
+    ProgressReporter,
+    broadcast,
+    format_broadcast_progress,
+    format_broadcast_result,
+)
+from app.services.liveness import liveness
 from app.states import AdminStates
 
 router = Router()
+
+# Ссылки на наблюдателей за рассылкой, чтобы задачи не собрал GC
+_watchers: set[asyncio.Task] = set()
+
+
+async def _show_broadcast_running(callback: CallbackQuery) -> None:
+    """Экран текущей рассылки"""
+    if broadcast.progress is not None:
+        text = format_broadcast_progress(broadcast.progress)
+    else:
+        text = "📤 <b>Рассылка…</b>\n\nЗапускаю…"
+    await ProgressReporter(callback.message, min_interval=0).update(text, AdminKeyboards.broadcast_running())
+
+
+async def broadcast_status_line() -> str:
+    """Строка о рассылке для панели /admin"""
+    progress = broadcast.progress
+    if progress is not None:
+        return f"📤 Рассылка: идёт <b>{progress.processed} / {progress.total}</b> ({progress.percent}%)"
+    last = await db.get_last_broadcast()
+    if last is None:
+        return "📤 Рассылок ещё не было"
+    when = (last.finished_at or last.created_at).strftime("%d.%m %H:%M")
+    return f"📤 Последняя рассылка: <b>{when}</b> — {STATUS_LABELS.get(last.status, last.status)}, {last.sent} / {last.total}"
 
 
 # Признак админа приходит из UserMiddleware как аргумент хендлера `is_admin: bool`
@@ -53,6 +86,7 @@ async def admin_command(message: Message, bot: Bot, is_admin: bool = False):
 async def admin_panel_text() -> str:
     """Текст главного экрана админки со статистикой (используется и для возврата «Назад»)"""
     icons_label, icons_note = custom_emoji_status.describe()
+    broadcast_line = await broadcast_status_line()
     stats = await db.get_bot_stats()
     if not stats:
         stats = await db.update_bot_stats()
@@ -72,6 +106,7 @@ async def admin_panel_text() -> str:
 🟢 Статус: <b>{stats.status}</b>
 🕐 Последний запуск: <b>{last_restart}</b>
 ⚙️ Иконки: <b>{icons_label}</b>{icons_note}
+{broadcast_line}
 
 Выберите действие:
 """
@@ -82,6 +117,11 @@ async def start_broadcast(callback: CallbackQuery, state: FSMContext, is_admin: 
     """Начало создания рассылки"""
     if not is_admin:
         await callback.answer("❌ У вас нет прав администратора")
+        return
+
+    if broadcast.is_running():
+        await _show_broadcast_running(callback)
+        await callback.answer("Рассылка уже идёт")
         return
 
     await state.set_state(AdminStates.broadcast_message)
@@ -103,8 +143,8 @@ async def receive_broadcast_message(message: Message, state: FSMContext, is_admi
         await state.clear()
         return
 
-    # Сохраняем сообщение в состояние
-    await state.update_data(broadcast_message=message)
+    # Строка JSON, не объект: RedisStorage хранит данные через json.dumps
+    await state.update_data(broadcast_message=message.model_dump_json())
 
     # Получаем количество пользователей для рассылки
     users_count = await db.get_alive_users_count()
@@ -204,89 +244,102 @@ async def broadcast_without_button(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "broadcast_confirm_yes")
 async def confirm_broadcast(callback: CallbackQuery, state: FSMContext, bot: Bot, is_admin: bool = False):
-    """Подтверждение и запуск рассылки"""
+    """Подтверждение: запись в БД и запуск рассылки в фоне; прогресс и итог — в этом же сообщении"""
     if not is_admin:
         await callback.answer("❌ У вас нет прав администратора")
         return
 
     data = await state.get_data()
-    broadcast_message = data.get("broadcast_message")
-
-    if not broadcast_message:
+    content = data.get("broadcast_message")
+    if not content:
         await callback.message.edit_text("❌ Ошибка: сообщение для рассылки не найдено")
         await state.clear()
         return
 
-    # Создаем кнопку если есть
-    custom_keyboard = None
-    if data.get("button_text") and data.get("button_url"):
-        custom_keyboard = AdminKeyboards.create_custom_button(
-            data["button_text"],
-            data["button_url"]
-        )
-
-    # Отвечаем на callback сразу: рассылка идёт долго, а callback query
-    # протухает через несколько секунд — ответ в конце вызвал бы ошибку
-    await callback.answer()
-
-    # Начинаем рассылку
-    broadcast_service = BroadcastService(bot)
-
-    # Сообщение о начале рассылки
-    progress_message = await callback.message.edit_text(
-        "📤 <b>Рассылка запущена...</b>\n\n"
-        "📊 Прогресс: <b>0%</b>\n"
-        "✅ Отправлено: <b>0</b>\n"
-        "❌ Ошибок: <b>0</b>\n"
-        "🚫 Заблокировано: <b>0</b>"
-    )
-    reporter = ProgressReporter(progress_message)
-
-    # Функция для обновления прогресса (репортер сам троттлит и переживает flood-wait)
-    async def update_progress(stats: dict):
-        progress_percent = int((stats["sent"] + stats["failed"] + stats["blocked"]) / stats["total"] * 100)
-        await reporter.update(
-            f"📤 <b>Рассылка в процессе...</b>\n\n"
-            f"📊 Прогресс: <b>{progress_percent}%</b>\n"
-            f"✅ Отправлено: <b>{stats['sent']}</b>\n"
-            f"❌ Ошибок: <b>{stats['failed']}</b>\n"
-            f"🚫 Заблокировано: <b>{stats['blocked']}</b>"
-        )
-
-    # Запускаем рассылку
-    try:
-        final_stats = await broadcast_service.send_broadcast(
-            message=broadcast_message,
-            custom_keyboard=custom_keyboard,
-            progress_callback=update_progress
-        )
-
-        await reporter.finish(format_broadcast_report(final_stats))
-
-    except Exception as e:
-        logger.error(f"Ошибка при рассылке: {e}")
-        await reporter.finish(
-            f"❌ <b>Ошибка при рассылке!</b>\n\n"
-            f"Описание: <code>{str(e)}</code>"
-        )
-    finally:
-        # Сбрасываем состояние при любом исходе, иначе следующее сообщение
-        # админа будет принято за контент новой рассылки
+    if broadcast.is_running():
         await state.clear()
+        await _show_broadcast_running(callback)
+        await callback.answer("Рассылка уже идёт", show_alert=True)
+        return
+    if liveness.is_running():
+        await state.clear()
+        await callback.answer("Идёт проверка живых — дождитесь её окончания", show_alert=True)
+        return
 
-
-def format_broadcast_report(final_stats: dict) -> str:
-    """Текст финального отчёта о рассылке"""
-    success_rate = int(final_stats["sent"] / final_stats["total"] * 100) if final_stats["total"] > 0 else 0
-    return (
-        f"✅ <b>Рассылка завершена!</b>\n\n"
-        f"📊 <b>Итоговая статистика:</b>\n"
-        f"👥 Всего получателей: <b>{final_stats['total']}</b>\n"
-        f"✅ Успешно доставлено: <b>{final_stats['sent']}</b>\n"
-        f"❌ Ошибок доставки: <b>{final_stats['failed']}</b>\n"
-        f"🚫 Заблокировали бота: <b>{final_stats['blocked']}</b>\n"
-        f"📈 Успешность: <b>{success_rate}%</b>"
+    broadcast_id = await db.create_broadcast(
+        created_by=callback.from_user.id, content=content,
+        button_text=data.get("button_text"), button_url=data.get("button_url"),
+        total=await db.get_alive_users_count(),
     )
+
+    # Отвечаем на callback сразу: рассылка идёт долго, а callback query протухает через несколько секунд.
+    # State чистим сразу же — хендлер больше не ждёт конца рассылки
+    await callback.answer()
+    await state.clear()
+
+    broadcast.configure(bot)
+    reporter = ProgressReporter(callback.message)
+
+    async def on_progress(progress: BroadcastProgress) -> None:
+        await reporter.update(format_broadcast_progress(progress), AdminKeyboards.broadcast_running())
+
+    # Сначала экран «Запускаю…», потом старт: иначе первый прогресс-колбэк
+    # может обогнать эту правку и «Запускаю…» перезатрёт прогресс
+    await reporter.update("📤 <b>Рассылка…</b>\n\nЗапускаю…", AdminKeyboards.broadcast_running())
+
+    task = broadcast.start(broadcast_id, on_progress)
+    if task is None:
+        # Проиграли гонку другому админу или планировщику liveness между проверкой выше и стартом
+        await db.update_broadcast(broadcast_id, last_user_id=0, sent=0, failed=0, blocked=0, status="failed")
+        reason = "идёт проверка живых" if liveness.is_running() else "рассылка уже идёт"
+        await reporter.finish(f"⚠️ Рассылка не запущена: {reason}", AdminKeyboards.broadcast_done())
+        return
+
+    async def watch() -> None:
+        await asyncio.wait({task})
+        if task.cancelled():
+            result = broadcast.last_result  # run() дописывает итог в finally перед raise
+            if result is not None and result.status != "running":  # running — бот выключается, итог после рестарта
+                await reporter.finish(format_broadcast_result(result), AdminKeyboards.broadcast_done())
+        elif (exc := task.exception()) is not None:
+            logger.opt(exception=exc).error("❌ Broadcast crashed")
+            await reporter.finish("❌ Рассылка упала, подробности в логах", AdminKeyboards.broadcast_done())
+        else:
+            await reporter.finish(format_broadcast_result(task.result()), AdminKeyboards.broadcast_done())
+
+    watcher = asyncio.create_task(watch())
+    _watchers.add(watcher)
+    watcher.add_done_callback(_watchers.discard)
+
+
+@router.callback_query(F.data == "broadcast:stop", IsAdmin())
+async def broadcast_stop(callback: CallbackQuery) -> None:
+    """Остановить текущую рассылку; итог допишет наблюдатель из confirm_broadcast"""
+    if broadcast.stop():
+        await callback.answer("Останавливаю…")
+    else:
+        await callback.answer("Рассылка не идёт")
+
+
+@router.callback_query(F.data == "broadcast:refresh", IsAdmin())
+async def broadcast_refresh(callback: CallbackQuery) -> None:
+    """Обновить экран рассылки вручную"""
+    if broadcast.is_running():
+        await _show_broadcast_running(callback)
+        await callback.answer()
+        return
+    result = broadcast.last_result
+    if result is not None and result.status != "running":
+        await ProgressReporter(callback.message, min_interval=0).update(
+            format_broadcast_result(result), AdminKeyboards.broadcast_done()
+        )
+    await callback.answer("Рассылка не идёт")
+
+
+@router.callback_query(F.data == "broadcast:back", IsAdmin())
+async def broadcast_back(callback: CallbackQuery) -> None:
+    await callback.message.edit_text(await admin_panel_text(), reply_markup=AdminKeyboards.main_admin_menu())
+    await callback.answer()
 
 
 @router.callback_query(F.data == "broadcast_confirm_no")

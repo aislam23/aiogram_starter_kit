@@ -22,7 +22,7 @@ class AdminKeyboards:
         builder = InlineKeyboardBuilder()
 
         builder.add(InlineKeyboardButton(
-            text="📊 Рассылка",
+            text="📤 Рассылка",
             callback_data="admin_broadcast"
         ))
 
@@ -124,6 +124,23 @@ class AdminKeyboards:
             callback_data="broadcast_confirm_no"
         ))
 
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def broadcast_running() -> InlineKeyboardMarkup:
+        """Во время рассылки"""
+        builder = InlineKeyboardBuilder()
+        builder.button(text="⏹ Остановить", callback_data="broadcast:stop")
+        builder.button(text="🔄 Обновить", callback_data="broadcast:refresh")
+        builder.adjust(1)
+        return builder.as_markup()
+
+    @staticmethod
+    def broadcast_done() -> InlineKeyboardMarkup:
+        """После рассылки"""
+        builder = InlineKeyboardBuilder()
+        builder.button(text="⬅️ Назад", callback_data="broadcast:back")
         builder.adjust(1)
         return builder.as_markup()
 

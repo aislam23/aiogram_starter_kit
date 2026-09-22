@@ -41,7 +41,7 @@ async def test_admin_panel_shows_stats_and_menu(harness, admin, fake_db):
 
     assert "Админская панель" in replies[0].text
     assert "Всего пользователей: <b>1</b>" in replies[0].text
-    assert "📊 Рассылка" in buttons_of(replies[0])
+    assert "📤 Рассылка" in buttons_of(replies[0])
 
 
 async def test_admin_panel_shows_custom_emoji_status(harness, admin, fake_db, monkeypatch):

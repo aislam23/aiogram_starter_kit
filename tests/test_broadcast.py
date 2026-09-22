@@ -8,13 +8,15 @@ Telegram отвечает flood control, экран замирает, а фин�
 import asyncio
 import importlib
 from datetime import UTC, datetime
+from typing import Any, Callable
 from unittest.mock import patch
 
 import pytest
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
-from aiogram.methods import EditMessageText, SendMessage, SendPhoto, SendSticker
+from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage, SendPhoto, SendSticker
 from aiogram.types import Chat, Message, MessageEntity, PhotoSize, Sticker, User
 
+from app.handlers.admin import admin as admin_handlers
 from app.keyboards import AdminKeyboards
 from app.services.broadcast import (
     MAX_RETRIES,
@@ -26,6 +28,7 @@ from app.services.broadcast import (
     format_broadcast_result,
 )
 from app.services.liveness import LivenessProgress, liveness
+from tests.harness import callbacks_of
 
 broadcast_module = importlib.import_module("app.services.broadcast")
 _real_sleep = asyncio.sleep
@@ -541,7 +544,9 @@ async def test_liveness_refuses_while_broadcast_runs(fake_db, fresh_broadcast):
     assert liveness.start("manual") is None
 
 
-def _gate(monkeypatch, name: str, *, when) -> tuple[asyncio.Event, asyncio.Event]:
+def _gate(
+    monkeypatch, name: str, *, when: Callable[[dict[str, Any]], bool]
+) -> tuple[asyncio.Event, asyncio.Event]:
     """Подвесить db.<name> на событии: `entered` — задача внутри вызова, `release` — отпустить.
 
     Даёт детерминированное окно для второй отмены (двойной «Стоп», asyncio.run на выходе).
@@ -589,13 +594,16 @@ async def test_second_stop_during_final_checkpoint_is_idempotent(fake_db, fresh_
 
 async def test_cancel_during_final_checkpoint_still_resets_state(fake_db, fresh_broadcast, monkeypatch):
     """asyncio.run добивает задачи на выходе: второй cancel() прилетает в await внутри finally."""
-    await _start_and_stop_in_final_checkpoint(fake_db, fresh_broadcast, monkeypatch)
+    bid, _release = await _start_and_stop_in_final_checkpoint(fake_db, fresh_broadcast, monkeypatch)
 
     fresh_broadcast._task.cancel()
     await fresh_broadcast.wait(timeout=1)
 
     assert fresh_broadcast.last_result is not None and fresh_broadcast.last_result.status == "stopped"
     assert not fresh_broadcast.is_running()
+    # Запись итога прервана вторым cancel(): строка в БД так и остаётся running — это задумано,
+    # после рестарта её подхватит resume_pending()
+    assert fake_db.broadcasts[bid].status == "running"
 
 
 async def test_stop_before_first_await_does_not_keep_stale_result(fake_db, fresh_broadcast, monkeypatch):
@@ -630,6 +638,8 @@ async def test_resume_watcher_ignores_result_of_other_broadcast(fake_db, fresh_b
 
     await fresh_broadcast.resume_pending()
     await fresh_broadcast.wait(timeout=1)
+    # done-callback из wait() зарегистрирован раньше, чем у наблюдателя, поэтому мы просыпаемся первыми
+    # и успеваем подменить last_result до того, как наблюдатель его прочитает
     fresh_broadcast.last_result = BroadcastProgress(broadcast_id=bid + 1, total=1, sent=1, status="done")
     await _drain_watchers()
 
@@ -658,65 +668,159 @@ def test_format_result_for_stopped_broadcast():
     assert "Доставлено: <b>40</b>" in text and "Успешность: <b>40%</b>" in text
 
 
-# --- confirm_broadcast: FSM очищается при любом исходе ----------------------
+# --- админка: мастер, подтверждение, стоп, панель ----------------------------
 
 
-async def _arm_confirm_state(harness, admin):
+async def _arm_confirm_state(harness, admin, text: str = "Текст рассылки"):
     """Админ уже отправил контент рассылки и видит кнопку подтверждения."""
     await harness.send_message("/start", admin)
     await harness.send_callback("admin_broadcast", admin)
-    await harness.send_message("Текст рассылки", admin)
+    await harness.send_message(text, admin)
     harness.clear()
 
 
-async def test_confirm_broadcast_reports_result_and_clears_state(harness, admin, monkeypatch):
+async def _drain_handler_watchers() -> None:
+    for watcher in list(admin_handlers._watchers):
+        await watcher
+
+
+async def test_receive_broadcast_message_stores_json_string(harness, admin):
+    """RedisStorage делает json.dumps — объект Message туда не помещается, только строка."""
+    await harness.send_message("/start", admin)
+    await harness.send_callback("admin_broadcast", admin)
+
+    await harness.send_message("Текст <рассылки>", admin)
+
+    content = (await harness.data_of(admin))["broadcast_message"]
+    assert isinstance(content, str)
+    assert Message.model_validate_json(content).text == "Текст <рассылки>"
+
+
+async def test_confirm_broadcast_starts_background_and_clears_state(harness, admin, fake_db, fresh_broadcast, monkeypatch):
+    await fake_db.add_user(1)
+    await fake_db.add_user(2)
     await _arm_confirm_state(harness, admin)
-
-    async def fake_send_broadcast(self, **kwargs):
-        return {"total": 10, "sent": 9, "failed": 0, "blocked": 1}
-
-    monkeypatch.setattr(BroadcastService, "send_broadcast", fake_send_broadcast)
+    monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 1000)
 
     replies = await harness.send_callback("broadcast_confirm_yes", admin)
 
-    assert "Рассылка завершена" in replies[-1].text
-    assert "Успешно доставлено: <b>9</b>" in replies[-1].text
-    assert await harness.state_of(admin) is None
+    assert "Запускаю" in replies[-1].text
+    assert "broadcast:stop" in callbacks_of(replies[-1])
+    assert await harness.state_of(admin) is None  # хендлер не ждёт конца рассылки
+    row = fake_db.broadcasts[1]
+    assert (row.created_by, row.total, row.status) == (admin.id, len(fake_db.users), "running")
+    assert Message.model_validate_json(row.content).text == "Текст рассылки"
+
+    await fresh_broadcast.wait(timeout=1)
+    await _drain_handler_watchers()
+
+    assert fake_db.broadcasts[1].status == "done"
+    assert "Рассылка завершена" in harness.last_text
+    delivered = [c for c in harness.calls if isinstance(c, SendMessage) and c.chat_id in (1, 2)]
+    assert [c.text for c in delivered] == ["Текст рассылки", "Текст рассылки"]
 
 
-async def test_confirm_broadcast_clears_state_even_if_broadcast_fails(harness, admin, monkeypatch):
-    await _arm_confirm_state(harness, admin)
-
-    async def failing_send_broadcast(self, **kwargs):
-        raise RuntimeError("упало")
-
-    monkeypatch.setattr(BroadcastService, "send_broadcast", failing_send_broadcast)
-
-    replies = await harness.send_callback("broadcast_confirm_yes", admin)
-
-    assert "Ошибка при рассылке" in replies[-1].text
-    assert await harness.state_of(admin) is None
-
-
-async def test_confirm_broadcast_answers_callback_before_sending(harness, admin, monkeypatch):
+async def test_confirm_broadcast_answers_callback_before_starting(harness, admin, fake_db, fresh_broadcast, monkeypatch):
     """Рассылка идёт долго, а callback query протухает — отвечать надо до старта."""
-    from aiogram.methods import AnswerCallbackQuery
-
     await _arm_confirm_state(harness, admin)
-    order: list[str] = []
-
-    async def fake_send_broadcast(self, **kwargs):
-        order.append("broadcast")
-        return {"total": 0, "sent": 0, "failed": 0, "blocked": 0}
-
-    monkeypatch.setattr(BroadcastService, "send_broadcast", fake_send_broadcast)
+    monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 1000)
 
     await harness.send_callback("broadcast_confirm_yes", admin)
+    await fresh_broadcast.wait(timeout=1)
+    await _drain_handler_watchers()
 
     answered_at = next(i for i, c in enumerate(harness.calls) if isinstance(c, AnswerCallbackQuery))
-    started_at = next(i for i, c in enumerate(harness.calls) if isinstance(c, EditMessageText) and "запущена" in (c.text or ""))
-    assert answered_at < started_at, "callback.answer() должен идти до запуска рассылки"
-    assert order == ["broadcast"]
+    started_at = next(i for i, c in enumerate(harness.calls) if isinstance(c, EditMessageText) and "Запускаю" in c.text)
+    assert answered_at < started_at
+
+
+async def test_confirm_broadcast_rejects_second_run(harness, admin, fake_db, fresh_broadcast):
+    await _arm_confirm_state(harness, admin)
+    fresh_broadcast.progress = BroadcastProgress(broadcast_id=1, total=10, sent=4)
+
+    replies = await harness.send_callback("broadcast_confirm_yes", admin)
+
+    assert fake_db.broadcasts == {}
+    assert await harness.state_of(admin) is None
+    assert "Рассылка…" in replies[-1].text and "<b>4</b> из 10" in replies[-1].text
+    alert = next(c for c in harness.calls if isinstance(c, AnswerCallbackQuery) and c.show_alert)
+    assert "уже идёт" in alert.text
+
+
+async def test_confirm_broadcast_rejects_while_liveness_runs(harness, admin, fake_db, fresh_broadcast):
+    await _arm_confirm_state(harness, admin)
+    liveness.progress = LivenessProgress(total=1)
+    try:
+        await harness.send_callback("broadcast_confirm_yes", admin)
+    finally:
+        liveness.progress = None
+
+    assert fake_db.broadcasts == {}
+    assert await harness.state_of(admin) is None
+    alert = next(c for c in harness.calls if isinstance(c, AnswerCallbackQuery) and c.show_alert)
+    assert "проверка живых" in alert.text
+
+
+async def test_broadcast_stop_button_cancels_and_reports(harness, admin, fake_db, fresh_broadcast, monkeypatch):
+    for uid in range(1, 2001):
+        await fake_db.add_user(uid)
+    await _arm_confirm_state(harness, admin)
+    monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 1000)
+
+    await harness.send_callback("broadcast_confirm_yes", admin)
+    await _real_sleep(0.01)
+    await harness.send_callback("broadcast:stop", admin)
+    await fresh_broadcast.wait(timeout=1)
+    await _drain_handler_watchers()
+
+    row = fake_db.broadcasts[1]
+    assert row.status == "stopped" and 0 < row.last_user_id
+    assert "Рассылка остановлена" in harness.last_text
+    assert "broadcast:back" in callbacks_of(harness.sent[-1])
+
+
+async def test_broadcast_refresh_shows_progress(harness, admin, fresh_broadcast):
+    await harness.send_message("/start", admin)
+    fresh_broadcast.progress = BroadcastProgress(broadcast_id=1, total=10, sent=4)
+
+    replies = await harness.send_callback("broadcast:refresh", admin)
+
+    assert "<b>4</b> из 10 (40%)" in replies[-1].text
+
+
+async def test_admin_broadcast_button_opens_progress_when_running(harness, admin, fresh_broadcast):
+    await harness.send_message("/start", admin)
+    fresh_broadcast.progress = BroadcastProgress(broadcast_id=1, total=5)
+
+    replies = await harness.send_callback("admin_broadcast", admin)
+
+    assert "Рассылка…" in replies[-1].text
+    assert "broadcast:stop" in callbacks_of(replies[-1])
+    assert await harness.state_of(admin) is None  # мастер не открылся
+
+
+async def test_admin_panel_shows_running_broadcast(harness, admin, fake_db, fresh_broadcast):
+    fresh_broadcast.progress = BroadcastProgress(broadcast_id=1, total=150000, sent=12000, failed=300, blocked=40)
+
+    replies = await harness.send_message("/admin", admin)
+
+    assert "📤 Рассылка: идёт <b>12340 / 150000</b> (8%)" in replies[0].text
+
+
+async def test_admin_panel_shows_last_broadcast(harness, admin, fake_db):
+    bid = await fake_db.create_broadcast(created_by=777, content="{}", button_text=None, button_url=None, total=10)
+    await fake_db.update_broadcast(bid, last_user_id=10, sent=9, failed=0, blocked=1, status="done")
+
+    replies = await harness.send_message("/admin", admin)
+
+    assert "📤 Последняя рассылка: <b>" in replies[0].text
+    assert "</b> — завершена, 9 / 10" in replies[0].text
+
+
+async def test_admin_panel_without_broadcasts(harness, admin, fake_db):
+    replies = await harness.send_message("/admin", admin)
+
+    assert "📤 Рассылок ещё не было" in replies[0].text
 
 
 # --- FakeDb: рассылки и курсор живых --------------------------------------

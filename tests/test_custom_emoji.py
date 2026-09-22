@@ -66,7 +66,7 @@ async def test_premium_on_converts_text_and_buttons(harness, admin):
     assert TG.format(id=Icons.WRENCH, fallback="🔧") in msg.text
     assert "🔧 <b>" not in msg.text
     first = msg.reply_markup.inline_keyboard[0][0]
-    assert (first.text, first.icon_custom_emoji_id) == ("Рассылка", Icons.STATS)
+    assert (first.text, first.icon_custom_emoji_id) == ("Рассылка", Icons.UPLOAD)
     assert harness.custom_emoji.enabled is True
 
 
@@ -74,7 +74,7 @@ async def test_premium_off_leaves_everything_plain(harness, admin):
     replies = await harness.send_message("/admin", admin)
     msg = replies[0]
     assert "<tg-emoji" not in msg.text
-    assert msg.reply_markup.inline_keyboard[0][0].text == "📊 Рассылка"
+    assert msg.reply_markup.inline_keyboard[0][0].text == "📤 Рассылка"
     assert _icons_of(msg) == [None] * len(_icons_of(msg))
 
 
@@ -93,7 +93,7 @@ async def test_premium_lost_is_detected_and_admins_notified_once(harness, admin)
     harness.clear()
     replies = await harness.send_message("/admin", admin)
     assert "<tg-emoji" not in replies[0].text
-    assert replies[0].reply_markup.inline_keyboard[0][0].text == "📊 Рассылка"
+    assert replies[0].reply_markup.inline_keyboard[0][0].text == "📤 Рассылка"
     assert not any("Иконки переключены" in (c.text or "") for c in harness.calls if isinstance(c, SendMessage))
 
 

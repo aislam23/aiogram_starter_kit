@@ -446,7 +446,7 @@ async def no_sleep(_seconds: float) -> None:
     pass
 ```
 
-(Старые `FakeProgressMessage` и тесты `ProgressReporter` остаются как есть. Старый `class FakeBot` с `send_message`, `FakeTextMessage` и оба теста `test_send_single_message_*` — **удалить** сейчас; их заменяют тесты ниже. Тесты `confirm_broadcast` внизу файла пока не трогать.)
+(Старые `FakeProgressMessage` и тесты `ProgressReporter` остаются как есть, но **старое определение `no_sleep` после `FakeProgressMessage` удалить** — остаётся только новое в шапке, иначе ruff F811. Старый `class FakeBot` с `send_message`, `FakeTextMessage` и оба теста `test_send_single_message_*` — **удалить** сейчас; их заменяют тесты ниже. Тесты `confirm_broadcast` внизу файла пока не трогать.)
 
 После блока тестов `ProgressReporter` добавить:
 
@@ -591,11 +591,10 @@ from aiogram.methods import SendMessage, TelegramMethod
 from aiogram.types import InlineKeyboardMarkup, Message
 from loguru import logger
 
-from app.config import settings
 from app.database import db
-from app.keyboards import AdminKeyboards
-from app.services.admins import notify_admins
-from app.services.liveness import liveness
+
+# Импорты settings, AdminKeyboards (задача 3), notify_admins, liveness (задача 4) добавляются там,
+# где появляется использующий их код — иначе ruff F401 и красный just check на промежуточных коммитах
 
 BATCH_SIZE = 500            # id получателей на один запрос к БД
 CHECKPOINT_EVERY = 50       # отправок между записями курсора в БД
@@ -706,7 +705,7 @@ class BroadcastService:
 
 Старые `MAX_RETRIES = 3` внутри класса удалить (теперь модульная константа); в `_send_single_message` заменить `self.MAX_RETRIES` на `MAX_RETRIES`. Старые методы `send_broadcast`, `_send_single_message`, `_send_once` оставить.
 
-Проверить, что `from app.services.liveness import liveness` не создаёт цикла: `liveness.py` не импортирует `broadcast` на уровне модуля (в задаче 4 добавим ленивый импорт внутри функции).
+`settings`, `AdminKeyboards`, `notify_admins`, `liveness` в этой задаче **не импортировать** — они ещё не используются (ruff F401).
 
 - [ ] **Step 5: Тесты проходят**
 
@@ -759,7 +758,7 @@ async def test_run_paces_sends_evenly(fake_db, sleeps, monkeypatch):
     assert (result.status, result.sent, result.processed) == ("done", 5, 5)
     # sleep не ждёт, monotonic почти не растёт → аргументы кумулятивны (0, 0.1, 0.2…); ровный темп = равные разности
     assert len(sleeps) == 5
-    gaps = [b - a for a, b in zip(sleeps, sleeps[1:])]
+    gaps = [b - a for a, b in zip(sleeps, sleeps[1:], strict=False)]  # ruff B905
     assert all(abs(gap - 0.1) < 0.02 for gap in gaps), sleeps
 
 
@@ -873,6 +872,14 @@ Run: `.venv/bin/python -m pytest tests/test_broadcast.py -k "test_run" -v`
 Expected: FAILED — `AttributeError: 'BroadcastService' object has no attribute 'run'` (и `is_running`).
 
 - [ ] **Step 3: Реализация `run`**
+
+Добавить импорты в `app/services/broadcast.py` (после `from app.database import db`):
+
+```python
+from app.keyboards import AdminKeyboards
+```
+
+и перед ним `from app.config import settings` (по алфавиту: `app.config`, `app.database`, `app.keyboards`). Служебный комментарий про отложенные импорты из задачи 2 можно удалить.
 
 В `BroadcastService` после `configure` добавить:
 
@@ -1166,6 +1173,17 @@ Run: `.venv/bin/python -m pytest tests/test_broadcast.py -v`
 Expected: ImportError `cannot import name 'BroadcastProgress'`… (нет `broadcast`, `format_broadcast_result`).
 
 - [ ] **Step 3: Реализация жизненного цикла и текстов**
+
+Добавить импорты в `app/services/broadcast.py` (после `from app.keyboards import AdminKeyboards`):
+
+```python
+from app.services.admins import notify_admins
+from app.services.liveness import liveness
+```
+
+`notify_admins` вызывать как имя модуля (`await notify_admins(...)`), не переимпортировать внутри функций — тесты подменяют его через `monkeypatch.setattr(broadcast_module, "notify_admins", …)`.
+
+Циклического импорта нет: `liveness.py` не импортирует `broadcast` на уровне модуля (Step 4 добавит ленивый импорт внутри `start()`).
 
 В `BroadcastService` после `is_running` добавить:
 
@@ -1531,7 +1549,13 @@ Expected: FAILED (нет `data_of`, `_watchers` у хендлеров, нет к
         return builder.as_markup()
 ```
 
-И в `main_admin_menu` кнопку `text="📊 Рассылка"` заменить на `text="📤 Рассылка"` (везде в UI рассылка — 📤).
+И в `main_admin_menu` кнопку `text="📊 Рассылка"` заменить на `text="📤 Рассылка"` (везде в UI рассылка — 📤). Это ломает четыре существующих теста — поправить их в этом же шаге:
+
+- `tests/test_handlers.py:44` — `"📊 Рассылка"` → `"📤 Рассылка"`;
+- `tests/test_custom_emoji.py:67` — `("Рассылка", Icons.STATS)` → `("Рассылка", Icons.UPLOAD)`;
+- `tests/test_custom_emoji.py:77` и `:96` — `"📊 Рассылка"` → `"📤 Рассылка"`.
+
+(Номера строк — на момент написания плана; искать по `grep -n "Рассылка" tests/test_handlers.py tests/test_custom_emoji.py`.)
 
 - [ ] **Step 4: Хендлеры**
 
@@ -1708,7 +1732,7 @@ async def broadcast_back(callback: CallbackQuery) -> None:
 
 - [ ] **Step 5: Удалить старый код сервиса и старые тесты**
 
-В `app/services/broadcast.py` удалить методы `send_broadcast`, `_send_single_message`, `_send_once` целиком. Проверить неиспользуемые импорты (`Dict`, `Any` могут остаться нужны для `ProgressReporter` — ruff подскажет).
+В `app/services/broadcast.py` удалить методы `send_broadcast`, `_send_single_message`, `_send_once` целиком и `Dict` из `from typing import …` (больше не используется; `Any`, `Awaitable`, `Callable` нужны `ProgressReporter`). Затем `ruff check app/services/broadcast.py`.
 
 В `app/services/__init__.py`:
 
@@ -1730,7 +1754,7 @@ Expected: все passed. Возможные точки: `tests/test_handlers.py:
 - [ ] **Step 7: `just check` и commit**
 
 ```bash
-git add app/keyboards/admin.py app/handlers/admin/admin.py app/services/broadcast.py app/services/__init__.py tests/harness.py tests/test_broadcast.py tests/test_bot_blocked.py
+git add app/keyboards/admin.py app/handlers/admin/admin.py app/services/broadcast.py app/services/__init__.py tests/harness.py tests/test_broadcast.py tests/test_bot_blocked.py tests/test_handlers.py tests/test_custom_emoji.py
 git commit -m "feat(broadcast): фоновый запуск из админки, стоп/обновить, строка в /admin, Message в FSM как JSON"
 ```
 
@@ -1848,6 +1872,8 @@ git commit -m "feat(broadcast): возобновление после реста
 сделай запись в `broadcasts` и вызови `broadcast.start(id)`, либо повтори тот же паттерн: курсор + темп +
 честный `retry_after` + чекпоинты.
 ```
+
+В §4.12 фразу «403 при рассылке (`BroadcastService`)» заменить на «403 при рассылке (`broadcast`, §4.14)».
 
 В §5 заменить пункт «Не отправлять сообщения в цикле без задержек…» на:
 

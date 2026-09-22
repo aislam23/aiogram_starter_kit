@@ -60,7 +60,10 @@ ProgressCallback = Callable[[LivenessProgress], Awaitable[None]]
 
 
 class LivenessService:
-    """Один прогон за раз (в рамках процесса); планировщик — раз в LIVENESS_CHECK_INTERVAL_DAYS ночью"""
+    """Один прогон за раз (в рамках процесса); планировщик — раз в LIVENESS_CHECK_INTERVAL_DAYS ночью.
+
+    Зеркалит `BroadcastService`: правки жизненного цикла (start/stop/wait) вносить в оба.
+    """
 
     def __init__(self):
         self.bot: Optional[Bot] = None
@@ -91,10 +94,11 @@ class LivenessService:
 
     def stop(self) -> bool:
         """Отменить текущий прогон. True — если было что отменять."""
-        if self._task_running():
+        if not self._task_running():
+            return False
+        if not self._task.cancelling():  # повторный cancel() прилетел бы в await внутри finally
             self._task.cancel()
-            return True
-        return False
+        return True
 
     async def wait(self, timeout: Optional[float] = None) -> None:
         """Дождаться завершения прогона (в т.ч. после stop()).
@@ -214,14 +218,18 @@ class LivenessService:
         finally:
             progress.finished_at = time.monotonic()
             try:
-                await db.update_liveness_check(
-                    check_id, checked=progress.checked, alive=progress.alive, blocked=progress.blocked,
-                    deleted=progress.deleted, errors=progress.errors, finished=True, cancelled=incomplete,
-                )
-            except Exception as e:
-                logger.exception(f"❌ Не удалось записать итог прогона #{check_id}: {e}")
-            self.last_result = progress
-            self.progress = None
+                try:
+                    await db.update_liveness_check(
+                        check_id, checked=progress.checked, alive=progress.alive, blocked=progress.blocked,
+                        deleted=progress.deleted, errors=progress.errors, finished=True, cancelled=incomplete,
+                    )
+                except Exception as e:
+                    logger.exception(f"❌ Не удалось записать итог прогона #{check_id}: {e}")
+            finally:
+                # Второй cancel() прилетает в await выше — сброс всё равно обязателен,
+                # иначе is_running() останется True навсегда
+                self.last_result = progress
+                self.progress = None
         logger.info(
             f"🩺 Liveness check #{check_id} finished: checked={progress.checked} alive={progress.alive} "
             f"blocked={progress.blocked} deleted={progress.deleted} errors={progress.errors}"

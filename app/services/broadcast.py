@@ -126,6 +126,16 @@ class BroadcastProgress:
     started_at: float = field(default_factory=time.monotonic)
     finished_at: Optional[float] = None
 
+    def count(self, verdict: Verdict) -> None:
+        if verdict == "sent":
+            self.sent += 1
+        elif verdict == "blocked":
+            self.blocked += 1
+        elif verdict == "failed":
+            self.failed += 1
+        else:
+            raise ValueError(f"Неизвестный вердикт отправки: {verdict!r}")
+
     @property
     def processed(self) -> int:
         return self.sent + self.failed + self.blocked
@@ -162,7 +172,10 @@ _watchers: set[asyncio.Task] = set()
 
 
 class BroadcastService:
-    """Одна рассылка за раз (в рамках процесса); синглтон `broadcast`, configure(bot) в main.py"""
+    """Одна рассылка за раз (в рамках процесса); синглтон `broadcast`, configure(bot) в main.py.
+
+    Зеркалит `LivenessService`: правки жизненного цикла (start/stop/wait) вносить в оба.
+    """
 
     def __init__(self, bot: Optional[Bot] = None):
         self.bot = bot
@@ -194,14 +207,16 @@ class BroadcastService:
         if not self._task_running():
             return False
         self._stop_requested = True
-        self._task.cancel()
+        if not self._task.cancelling():  # повторный cancel() прилетел бы в await внутри finally
+            self._task.cancel()
         return True
 
     def stop_for_shutdown(self) -> bool:
         """Прервать на выключении бота: статус остаётся running, рассылка возобновится после рестарта."""
         if not self._task_running():
             return False
-        self._task.cancel()
+        if not self._task.cancelling():
+            self._task.cancel()
         return True
 
     async def wait(self, timeout: Optional[float] = None) -> None:
@@ -238,8 +253,8 @@ class BroadcastService:
             await asyncio.wait({task})
             self._log_outcome(task)
             result = self.last_result
-            if result is None or result.status == "running":
-                return  # снова прервана рестартом — итог придёт после следующего
+            if result is None or result.broadcast_id != row.id or result.status == "running":
+                return  # чужой итог или снова прервана рестартом — итог придёт после следующего
             await notify_admins(self.bot, format_broadcast_result(result))
 
         watcher = asyncio.create_task(watch(), name=f"broadcast-{row.id}-watch")
@@ -250,14 +265,15 @@ class BroadcastService:
         """Одна рассылка от курсора до конца. При отмене дописывает курсор; статус — см. except."""
         if self.bot is None:
             raise RuntimeError("BroadcastService не сконфигурирован (bot=None)")
+        # Сброс до первого await: stop() в окне get_broadcast() не должен оставить итог прошлой рассылки
+        self.last_result = None  # чтобы наблюдатель не показал итог прошлой рассылки
+        self._stop_requested = False
+        self._error_kinds = Counter()
         row = await db.get_broadcast(broadcast_id)
         if row is None or row.status != "running":
             raise RuntimeError(f"Рассылка #{broadcast_id} не найдена или уже завершена")
         progress = BroadcastProgress(broadcast_id, total=row.total, sent=row.sent, failed=row.failed, blocked=row.blocked)
         self.progress = progress
-        self.last_result = None  # чтобы наблюдатель не показал итог прошлой рассылки
-        self._stop_requested = False
-        self._error_kinds = Counter()
         delay = 1 / max(settings.broadcast_rate_limit_rps, 1)
         next_at = time.monotonic()
         after_id = row.last_user_id
@@ -282,8 +298,7 @@ class BroadcastService:
                     await asyncio.sleep(max(0.0, next_at - time.monotonic()))
                     next_at = max(next_at, time.monotonic()) + delay
 
-                    verdict = await self._send(uid, message, keyboard)
-                    setattr(progress, verdict, getattr(progress, verdict) + 1)
+                    progress.count(await self._send(uid, message, keyboard))
                     after_id = uid
                     since_checkpoint += 1
 
@@ -309,15 +324,19 @@ class BroadcastService:
         finally:
             progress.finished_at = time.monotonic()
             try:
-                await self._checkpoint(progress, after_id, status=progress.status)
-            except Exception as e:
-                logger.exception(f"❌ Не удалось записать итог рассылки #{broadcast_id}: {e}")
-            self.last_result = progress
-            self.progress = None
-            logger.info(
-                f"📤 Broadcast #{broadcast_id} {progress.status}: sent={progress.sent} failed={progress.failed} "
-                f"blocked={progress.blocked} of {progress.total}{self._errors_summary()}"
-            )
+                try:
+                    await self._checkpoint(progress, after_id, status=progress.status)
+                except Exception as e:
+                    logger.exception(f"❌ Не удалось записать итог рассылки #{broadcast_id}: {e}")
+            finally:
+                # Второй cancel() (двойной «Стоп», asyncio.run на выходе) прилетает в await выше —
+                # сброс всё равно обязателен, иначе is_running() останется True навсегда
+                self.last_result = progress
+                self.progress = None
+                logger.info(
+                    f"📤 Broadcast #{broadcast_id} {progress.status}: sent={progress.sent} failed={progress.failed} "
+                    f"blocked={progress.blocked} of {progress.total}{self._errors_summary()}"
+                )
         return progress
 
     async def _checkpoint(self, progress: BroadcastProgress, after_id: int, status: Optional[str] = None) -> None:

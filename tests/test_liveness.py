@@ -119,6 +119,36 @@ async def test_stop_cancels_run_and_marks_journal_cancelled(fake_db, fresh_liven
     assert not fresh_liveness.is_running()
 
 
+async def test_second_stop_during_final_write_is_idempotent(fake_db, fresh_liveness, monkeypatch):
+    """Двойной «Стоп»: второй cancel() прилетел бы в запись итога внутри finally и сорвал сброс состояния."""
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = liveness_module.db.update_liveness_check
+
+    async def gated(*args, **kwargs):
+        if kwargs.get("finished"):
+            entered.set()
+            await release.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(liveness_module.db, "update_liveness_check", gated)
+    for uid in range(1, 2001):
+        await fake_db.add_user(uid)
+    fresh_liveness.configure(ProbeBot({}))  # type: ignore[arg-type]
+    monkeypatch.setattr(liveness_module.settings, "liveness_rate_limit_rps", 1000)
+
+    fresh_liveness.start("manual")
+    await asyncio.sleep(0.01)
+    assert fresh_liveness.stop() is True
+    await asyncio.wait_for(entered.wait(), 1)
+    assert fresh_liveness.stop() is True  # повторный — без второго cancel()
+    release.set()
+    await fresh_liveness.wait(timeout=1)
+
+    assert fake_db.liveness_checks[0].cancelled is True
+    assert fresh_liveness.last_result is not None
+    assert not fresh_liveness.is_running()
+
+
 async def test_sustained_flood_wait_aborts_run(fake_db, fast):
     for uid in range(1, 11):
         await fake_db.add_user(uid)

@@ -432,7 +432,7 @@ async def test_run_refuses_finished_broadcast(fake_db, sleeps):
 
 
 async def test_stop_marks_stopped_and_keeps_cursor(fake_db, fresh_broadcast, monkeypatch):
-    for uid in range(1, 51):
+    for uid in range(1, 2001):
         await fake_db.add_user(uid)
     monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 1000)  # 1 мс на получателя, реальный sleep
     bot = FakeBot()
@@ -448,7 +448,7 @@ async def test_stop_marks_stopped_and_keeps_cursor(fake_db, fresh_broadcast, mon
 
     assert task.cancelled()
     result = fresh_broadcast.last_result
-    assert result.status == "stopped" and 0 < result.processed < 50
+    assert result.status == "stopped" and 0 < result.processed < 2000
     row = fake_db.broadcasts[bid]
     assert row.status == "stopped" and row.finished_at is not None
     assert row.last_user_id == bot.chat_ids[-1]  # курсор — последний обработанный
@@ -457,7 +457,7 @@ async def test_stop_marks_stopped_and_keeps_cursor(fake_db, fresh_broadcast, mon
 
 
 async def test_shutdown_keeps_broadcast_running_in_db(fake_db, fresh_broadcast, monkeypatch):
-    for uid in range(1, 51):
+    for uid in range(1, 2001):
         await fake_db.add_user(uid)
     monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 1000)
     fresh_broadcast.configure(FakeBot())
@@ -470,7 +470,7 @@ async def test_shutdown_keeps_broadcast_running_in_db(fake_db, fresh_broadcast, 
 
     row = fake_db.broadcasts[bid]
     assert row.status == "running" and row.finished_at is None  # возобновится после рестарта
-    assert 0 < row.last_user_id < 50
+    assert 0 < row.last_user_id < 2000
     assert fresh_broadcast.last_result.status == "running"
 
 
@@ -506,7 +506,7 @@ async def test_resume_pending_without_running_broadcast_does_nothing(fake_db, fr
 
 
 async def test_resume_pending_stays_silent_if_interrupted_again(fake_db, fresh_broadcast, monkeypatch):
-    for uid in range(1, 51):
+    for uid in range(1, 2001):
         await fake_db.add_user(uid)
     monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 1000)
     await _new_broadcast(fake_db)
@@ -539,6 +539,110 @@ async def test_liveness_refuses_while_broadcast_runs(fake_db, fresh_broadcast):
     fresh_broadcast.progress = BroadcastProgress(broadcast_id=1, total=1)
 
     assert liveness.start("manual") is None
+
+
+def _gate(monkeypatch, name: str, *, when) -> tuple[asyncio.Event, asyncio.Event]:
+    """Подвесить db.<name> на событии: `entered` — задача внутри вызова, `release` — отпустить.
+
+    Даёт детерминированное окно для второй отмены (двойной «Стоп», asyncio.run на выходе).
+    """
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = getattr(broadcast_module.db, name)
+
+    async def gated(*args, **kwargs):
+        if when(kwargs):
+            entered.set()
+            await release.wait()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(broadcast_module.db, name, gated)
+    return entered, release
+
+
+async def _start_and_stop_in_final_checkpoint(fake_db, fresh_broadcast, monkeypatch) -> tuple[int, asyncio.Event]:
+    """Рассылка остановлена и висит в finally на записи итога."""
+    entered, release = _gate(monkeypatch, "update_broadcast", when=lambda kw: kw.get("status") is not None)
+    for uid in range(1, 2001):
+        await fake_db.add_user(uid)
+    monkeypatch.setattr(broadcast_module.settings, "broadcast_rate_limit_rps", 1000)
+    fresh_broadcast.configure(FakeBot())
+    bid = await _new_broadcast(fake_db)
+
+    fresh_broadcast.start(bid)
+    await _real_sleep(0.01)
+    assert fresh_broadcast.stop() is True
+    await asyncio.wait_for(entered.wait(), 1)
+    return bid, release
+
+
+async def test_second_stop_during_final_checkpoint_is_idempotent(fake_db, fresh_broadcast, monkeypatch):
+    bid, release = await _start_and_stop_in_final_checkpoint(fake_db, fresh_broadcast, monkeypatch)
+
+    assert fresh_broadcast.stop() is True  # админ нажал «Стоп» дважды — второго cancel() быть не должно
+    release.set()
+    await fresh_broadcast.wait(timeout=1)
+
+    assert fake_db.broadcasts[bid].status == "stopped"
+    assert fresh_broadcast.last_result.status == "stopped"
+    assert not fresh_broadcast.is_running()
+
+
+async def test_cancel_during_final_checkpoint_still_resets_state(fake_db, fresh_broadcast, monkeypatch):
+    """asyncio.run добивает задачи на выходе: второй cancel() прилетает в await внутри finally."""
+    await _start_and_stop_in_final_checkpoint(fake_db, fresh_broadcast, monkeypatch)
+
+    fresh_broadcast._task.cancel()
+    await fresh_broadcast.wait(timeout=1)
+
+    assert fresh_broadcast.last_result is not None and fresh_broadcast.last_result.status == "stopped"
+    assert not fresh_broadcast.is_running()
+
+
+async def test_stop_before_first_await_does_not_keep_stale_result(fake_db, fresh_broadcast, monkeypatch):
+    """stop() в окне первого await: итог прошлой рассылки не должен остаться в last_result."""
+    entered, release = _gate(monkeypatch, "get_broadcast", when=lambda kw: True)
+    await fake_db.add_user(1)
+    fresh_broadcast.configure(FakeBot())
+    bid = await _new_broadcast(fake_db)
+    fresh_broadcast.last_result = BroadcastProgress(broadcast_id=99, total=1, sent=1, status="done")
+
+    fresh_broadcast.start(bid)
+    await asyncio.wait_for(entered.wait(), 1)
+    assert fresh_broadcast.stop() is True
+    release.set()
+    await fresh_broadcast.wait(timeout=1)
+
+    assert fresh_broadcast.last_result is None
+    assert not fresh_broadcast.is_running()
+
+
+async def test_resume_watcher_ignores_result_of_other_broadcast(fake_db, fresh_broadcast, sleeps, monkeypatch):
+    """Наблюдатель возобновлённой рассылки не должен отчитаться итогом чужой."""
+    await fake_db.add_user(1)
+    bid = await _new_broadcast(fake_db)
+    fresh_broadcast.configure(FakeBot())
+    notified: list[str] = []
+
+    async def fake_notify(_bot, text: str) -> None:
+        notified.append(text)
+
+    monkeypatch.setattr(broadcast_module, "notify_admins", fake_notify)
+
+    await fresh_broadcast.resume_pending()
+    await fresh_broadcast.wait(timeout=1)
+    fresh_broadcast.last_result = BroadcastProgress(broadcast_id=bid + 1, total=1, sent=1, status="done")
+    await _drain_watchers()
+
+    assert notified == []
+
+
+def test_progress_count_by_verdict():
+    progress = BroadcastProgress(broadcast_id=1, total=3)
+
+    for verdict in ("sent", "blocked", "failed", "sent"):
+        progress.count(verdict)
+
+    assert (progress.sent, progress.blocked, progress.failed, progress.processed) == (2, 1, 1, 4)
 
 
 # --- тексты ------------------------------------------------------------------

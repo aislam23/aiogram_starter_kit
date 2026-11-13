@@ -419,9 +419,28 @@ check-secrets: check-python
 venv: check-python
     #!/usr/bin/env sh
     set -e
+    # aiogram не ставится на Python 3.15+, а системный python3 бывает новее. Берём 3.11–3.14, в первую очередь 3.11, как в Docker
+    supported='import sys; sys.exit(0 if (3, 11) <= sys.version_info[:2] < (3, 15) else 1)'
+    if [ -x .venv/bin/python ] && ! .venv/bin/python -c "$supported" 2>/dev/null; then
+        echo "⚠️ .venv на неподходящей версии Python, пересоздаю"
+        rm -rf .venv
+    fi
     if [ ! -d .venv ]; then
-        {{python}} -m venv .venv
-        echo "✅ Created .venv"
+        PY=""
+        for candidate in python3.11 python3.12 python3.13 python3.14 {{python}}; do
+            if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "$supported" 2>/dev/null; then
+                PY="$candidate"
+                break
+            fi
+        done
+        if [ -z "$PY" ]; then
+            echo "❌ Нужен Python 3.11–3.14 (aiogram не поддерживает 3.15+)."
+            echo "   macOS:  brew install python@3.11"
+            echo "   Ubuntu: sudo apt install python3.11 python3.11-venv"
+            exit 1
+        fi
+        "$PY" -m venv .venv
+        echo "✅ Created .venv ($("$PY" --version))"
     fi
     if [ -x .venv/bin/python ]; then PY=.venv/bin/python; else PY=.venv/Scripts/python.exe; fi
     $PY -m pip install -q -r requirements-dev.txt

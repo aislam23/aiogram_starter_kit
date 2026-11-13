@@ -80,6 +80,10 @@ def test_apply_does_not_regenerate_passwords_on_rerun(project):
     assert _env(project / ".env")["POSTGRES_PASSWORD"] == first
 
 
+@pytest.mark.skipif(
+    "aiogram_" not in (ROOT / "docker-compose.yml").read_text(),
+    reason="проект уже инициализирован из шаблона: исходных имён aiogram_* в compose больше нет",
+)
 def test_apply_renames_docker_resources(project):
     init_project.apply(project, init_project.ProjectConfig(name="my_bot", admin_id=123))
 

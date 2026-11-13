@@ -6,3 +6,5 @@ pydantic-settings==2.6.1
 python-dotenv==1.0.1
 loguru==0.7.2
 sqlalchemy==2.0.35
+# Нужен async SQLAlchemy; сам SQLAlchemy ставит его не везде (нет на macOS arm64 и на Python 3.13+)
+greenlet==3.2.4

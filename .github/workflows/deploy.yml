@@ -42,7 +42,8 @@ jobs:
     steps:
       - name: Skip
         if: env.HAS_DEPLOY_SECRETS != 'true'
-        run: echo "Секреты деплоя не заданы — пропускаю. Настроить: just set-server && just deploy-github"
+        # Кавычки обязательны: «Настроить: just…» без них YAML читает как ключ и значение, и весь workflow не парсится
+        run: 'echo "Секреты деплоя не заданы, пропускаю. Настроить: just set-server && just deploy-github"'
       - uses: actions/checkout@v7
         if: env.HAS_DEPLOY_SECRETS == 'true'
       - uses: actions/setup-python@v7

@@ -301,8 +301,19 @@ deploy-github: _check-python ## ☁️ Publish deploy secrets to GitHub Actions 
 check-secrets: _check-python ## 🔍 Scan tracked files for leaked secrets
 	@$(PYTHON) scripts/check_secrets.py
 
-venv: _check-python ## 🐍 Create .venv with dev dependencies
-	@[ -d .venv ] || $(PYTHON) -m venv .venv
+venv: _check-python ## 🐍 Create .venv with dev dependencies (Python 3.11–3.14)
+	@supported='import sys; sys.exit(0 if (3, 11) <= sys.version_info[:2] < (3, 15) else 1)'; \
+	if [ -x .venv/bin/python ] && ! .venv/bin/python -c "$$supported" 2>/dev/null; then \
+		echo "⚠️ .venv на неподходящей версии Python, пересоздаю"; rm -rf .venv; \
+	fi; \
+	if [ ! -d .venv ]; then \
+		PY=""; \
+		for c in python3.11 python3.12 python3.13 python3.14 $(PYTHON); do \
+			if command -v $$c >/dev/null 2>&1 && $$c -c "$$supported" 2>/dev/null; then PY=$$c; break; fi; \
+		done; \
+		if [ -z "$$PY" ]; then echo "$(RED)❌ Нужен Python 3.11–3.14 (aiogram не поддерживает 3.15+). macOS: brew install python@3.11$(NC)"; exit 1; fi; \
+		$$PY -m venv .venv; \
+	fi
 	@.venv/bin/python -m pip install -q -r requirements-dev.txt
 	@echo "$(GREEN)✅ Dev dependencies installed$(NC)"
 

@@ -63,6 +63,13 @@ def detect_compose(runner=_probe) -> list[str] | None:
     return None
 
 
+def prod_compose(compose: list[str]) -> list[str]:
+    """Команда compose для прода. `--env-file .env.prod` обязателен: подстановки ${POSTGRES_PASSWORD} и
+    ${REDIS_PASSWORD} в docker-compose.prod.yml иначе берутся из .env, которого на сервере нет, и пустое
+    значение перебивает env_file."""
+    return compose + ['--env-file', '.env.prod', '-f', 'docker-compose.prod.yml']
+
+
 def main() -> int:
     # Determine CI mode
     ci_mode = (
@@ -76,7 +83,7 @@ def main() -> int:
     if compose is None:
         log_error("Ошибка: Docker Compose не найден (ни `docker compose`, ни `docker-compose`)", c)
         return 1
-    docker_compose = compose + ['-f', 'docker-compose.prod.yml']
+    docker_compose = prod_compose(compose)
 
     log_info("=== Начало деплоя продакшена ===", c)
 

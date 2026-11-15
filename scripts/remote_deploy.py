@@ -35,7 +35,8 @@ Connect = Callable[[sc.Credentials], sc.SshSession]
 
 EXCLUDED_DIRS = {".git", ".venv", "venv", ".deploy", "logs", "__pycache__", ".pytest_cache", ".ruff_cache",
                  "node_modules", ".idea", ".vscode"}
-COMPOSE_PROD = "docker compose -f docker-compose.prod.yml"
+# --env-file: подстановки ${...} в compose берутся из .env.prod (файла .env на сервере нет)
+COMPOSE_PROD = "docker compose --env-file .env.prod -f docker-compose.prod.yml"
 
 
 def default_runner(cmd: List[str], cwd: Path) -> Tuple[int, str]:
@@ -100,8 +101,8 @@ def deploy_script(project_path: str, archive_path: str) -> str:
 def _compose_in(project_path: str, tail: str) -> str:
     return (
         f"cd {project_path} && "
-        f"(docker compose version >/dev/null 2>&1 && docker compose -f docker-compose.prod.yml {tail} "
-        f"|| docker-compose -f docker-compose.prod.yml {tail})"
+        f"(docker compose version >/dev/null 2>&1 && docker compose --env-file .env.prod -f docker-compose.prod.yml {tail} "
+        f"|| docker-compose --env-file .env.prod -f docker-compose.prod.yml {tail})"
     )
 
 

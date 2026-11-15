@@ -26,3 +26,10 @@ def test_detect_compose_falls_back_to_v1_binary():
 
 def test_detect_compose_returns_none_when_absent():
     assert deploy.detect_compose(lambda cmd: (1, "")) is None
+
+
+def test_prod_compose_reads_interpolation_from_env_prod():
+    # без --env-file compose берёт ${POSTGRES_PASSWORD} из .env, которого на сервере нет,
+    # и пустое значение перебивает env_file: Postgres не стартует, Redis остаётся без пароля
+    cmd = deploy.prod_compose(["docker", "compose"])
+    assert cmd == ["docker", "compose", "--env-file", ".env.prod", "-f", "docker-compose.prod.yml"]

@@ -16,7 +16,7 @@ docker_compose := if `docker compose version >/dev/null 2>&1; echo $?` == "0" {
 } else {
     ""
 }
-docker_compose_prod := docker_compose + " -f docker-compose.prod.yml"
+docker_compose_prod := docker_compose + " --env-file .env.prod -f docker-compose.prod.yml"
 
 # Auto-detect Python: prefer python3, fall back to python
 python := if `command -v python3 >/dev/null 2>&1; echo $?` == "0" {

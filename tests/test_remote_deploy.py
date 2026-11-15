@@ -178,3 +178,11 @@ def test_main_without_config_explains_set_server(tmp_path, capsys):
     code = rd.main(["deploy", "--root", str(tmp_path)], connect=lambda c: FakeSession(c, []))
     assert code == 1
     assert "set-server" in capsys.readouterr().out
+
+
+def test_logs_and_status_use_env_prod_for_interpolation():
+    log = []
+    rd.logs(_cfg(), 30, connect=lambda creds: FakeSession(creds, log))
+    rd.status(_cfg(), connect=lambda creds: FakeSession(creds, log))
+    compose_cmds = [c for kind, c in log if "docker-compose.prod.yml" in c]
+    assert compose_cmds and all(c.count("--env-file .env.prod") == 2 for c in compose_cmds)

@@ -170,7 +170,7 @@ docker-compose down
 | `make shell` | `just shell` | `docker-compose exec bot bash` |
 | `make db-shell` | `just db-shell` | `docker-compose exec postgres psql -U botuser -d botdb` |
 | `make test` | `just test` | `docker-compose exec bot python -m pytest tests/ -v` |
-| `make prod` | `just prod` | `docker-compose -f docker-compose.prod.yml up --build -d` |
+| `make prod` | `just prod` | `docker-compose --env-file .env.prod -f docker-compose.prod.yml up --build -d` |
 | `make init NAME=my_bot ADMIN=@username` | `just init my_bot @username` | `python scripts/init_project.py --name my_bot --admin @username` |
 | `make restart-bot` | `just restart-bot` | `docker-compose restart bot` |
 

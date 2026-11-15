@@ -11,7 +11,8 @@ DOCKER_COMPOSE := $(shell \
 	elif command -v docker-compose >/dev/null 2>&1; then \
 		echo "docker-compose"; \
 	fi)
-DOCKER_COMPOSE_PROD := $(DOCKER_COMPOSE) -f docker-compose.prod.yml
+# --env-file: подстановки ${...} в compose берутся из .env.prod (файла .env на сервере нет)
+DOCKER_COMPOSE_PROD := $(DOCKER_COMPOSE) --env-file .env.prod -f docker-compose.prod.yml
 
 # Auto-detect Python: prefer python3, fall back to python
 PYTHON := $(shell \

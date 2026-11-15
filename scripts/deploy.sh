@@ -8,6 +8,9 @@
 
 set -e
 
+# --env-file: подстановки ${...} в compose берутся из .env.prod (файла .env на сервере нет)
+COMPOSE="docker-compose --env-file .env.prod -f docker-compose.prod.yml"
+
 # Определяем режим CI
 CI_MODE=false
 if [ "$1" = "--ci" ] || [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
@@ -68,29 +71,29 @@ if [ "$CI_MODE" = true ]; then
 fi
 
 log_info "=== Сборка Docker-образов ==="
-docker-compose -f docker-compose.prod.yml build --no-cache
+$COMPOSE build --no-cache
 
 log_info "=== Остановка текущих контейнеров ==="
-docker-compose -f docker-compose.prod.yml down
+$COMPOSE down
 
 log_info "=== Запуск продакшен-окружения ==="
-docker-compose -f docker-compose.prod.yml up -d
+$COMPOSE up -d
 
 log_info "=== Ожидание запуска сервисов ==="
 sleep 15
 
 log_info "=== Статус сервисов ==="
-docker-compose -f docker-compose.prod.yml ps
+$COMPOSE ps
 
 # Проверка здоровья контейнеров
 log_info "=== Проверка здоровья ==="
-UNHEALTHY=$(docker-compose -f docker-compose.prod.yml ps | grep -c "unhealthy" || true)
+UNHEALTHY=$($COMPOSE ps | grep -c "unhealthy" || true)
 if [ "$UNHEALTHY" -gt 0 ]; then
     log_error "Внимание: обнаружены нездоровые контейнеры!"
-    docker-compose -f docker-compose.prod.yml ps
+    $COMPOSE ps
     if [ "$CI_MODE" = true ]; then
         log_error "Последние логи бота:"
-        docker-compose -f docker-compose.prod.yml logs --tail=30 bot
+        $COMPOSE logs --tail=30 bot
         exit 1
     fi
 fi

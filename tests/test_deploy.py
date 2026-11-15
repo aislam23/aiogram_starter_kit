@@ -33,3 +33,16 @@ def test_prod_compose_reads_interpolation_from_env_prod():
     # и пустое значение перебивает env_file: Postgres не стартует, Redis остаётся без пароля
     cmd = deploy.prod_compose(["docker", "compose"])
     assert cmd == ["docker", "compose", "--env-file", ".env.prod", "-f", "docker-compose.prod.yml"]
+
+
+def test_every_prod_compose_call_passes_env_prod():
+    # Makefile, shell-деплой и команды в документации должны вести себя так же, как deploy.py
+    root = Path(__file__).resolve().parent.parent
+    files = [root / "Makefile", root / "justfile", *(root / "scripts").glob("*.sh"), *(root / "docs").glob("*.md")]
+    offenders = [
+        f"{path.relative_to(root)}:{n}"
+        for path in files
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if "-f docker-compose.prod.yml" in line and "--env-file .env.prod" not in line
+    ]
+    assert offenders == []

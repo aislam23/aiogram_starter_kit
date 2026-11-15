@@ -149,8 +149,8 @@ nano .env.prod       # BOT_TOKEN, BOT_USERNAME, ADMIN_USERNAMES, POSTGRES_PASSWO
 
 ```bash
 python3 scripts/deploy.py      # сборка, запуск, проверка здоровья
-docker compose -f docker-compose.prod.yml ps
-docker compose -f docker-compose.prod.yml logs --tail=50 bot
+docker compose --env-file .env.prod -f docker-compose.prod.yml ps
+docker compose --env-file .env.prod -f docker-compose.prod.yml logs --tail=50 bot
 ```
 
 ### SSH-ключ вместо пароля
